@@ -1,0 +1,2898 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Restaurant merchant core API",
+    "version": "0.1.0",
+    "description": "首个业务闭环的接口契约建议：商家注册/验证/登录/建店/改资料。尚未实现后端、选技术栈或接通真实资源。建议同源/api/v1网关与安全Cookie，部署/认证方案须在实施前确认。示例均为合成数据，不是真实账户或凭据。"
+  },
+  "servers": [
+    {
+      "url": "/api/v1",
+      "description": "相对服务路径，不声称已有线上服务"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Auth",
+      "description": "账号验证与会话；不暴露底层凭据表CRUD"
+    },
+    {
+      "name": "Restaurants",
+      "description": "商家归属与餐厅草稿；不含生成、发布、预约或营销接口"
+    }
+  ],
+  "security": [
+    {
+      "SessionCookie": []
+    }
+  ],
+  "paths": {
+    "/auth/registration-policy": {
+      "get": {
+        "operationId": "getRegistrationPolicy",
+        "summary": "读取当前注册条款与密码规则",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "当前版本与规则，不含用户信息",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistrationPolicy"
+                },
+                "example": {
+                  "terms_version": "terms-v1",
+                  "terms_url": "/legal/terms-v1",
+                  "privacy_notice_version": "privacy-v1",
+                  "privacy_url": "/legal/privacy-v1",
+                  "supported_locales": [
+                    "en",
+                    "zh-CN"
+                  ],
+                  "password_min_length": 15,
+                  "password_max_length": 128
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/auth/csrf": {
+      "get": {
+        "operationId": "getCsrfToken",
+        "summary": "获取当前认证上下文的CSRF token",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "description": "仅允许前端白名单Origin。GET缺Origin时仅接受网关核验的同源请求，例如严格同源Referer和Sec-Fetch-Site=same-origin；证据不足403，不自动放行。登录时轮换会话及CSRF上下文。建议同源网关，不锁定部署供应商。",
+        "responses": {
+          "200": {
+            "description": "token绑定已登录session或短期匿名authflow",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/AuthFlowCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CsrfResponse"
+                },
+                "example": {
+                  "csrf_token": "example_csrf_token_not_a_real_secret_123456",
+                  "expires_at": "2026-11-14T01:00:00Z"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "operationId": "registerMerchant",
+        "summary": "申请注册商家账号",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "AuthFlowCookie": [],
+            "CsrfToken": []
+          },
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "有效新账号写pending_verification、凭据、验证令牌和邮件outbox，事务成功才202。不建立登录会话，不替换已注册账号密码，不给予商家/管理员权限。合法已存在邮箱同样202；后台细节不反映在响应或显著时间差中。",
+        "responses": {
+          "202": {
+            "description": "统一受理结果，不泄露邮箱是否注册",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                },
+                "example": {
+                  "message": "如该请求符合条件，我们将向对应邮箱发送说明。"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterInput"
+              },
+              "example": {
+                "email": "owner@restaurant.example",
+                "password": "Example-only-not-a-real-password-2026",
+                "display_name": "Restaurant owner",
+                "locale": "en",
+                "terms_version": "terms-v1",
+                "accepted_terms": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/verification-emails": {
+      "post": {
+        "operationId": "requestEmailVerification",
+        "summary": "请求重新发送邮箱验证邮件",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "AuthFlowCookie": [],
+            "CsrfToken": []
+          },
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "",
+        "responses": {
+          "202": {
+            "description": "统一受理结果",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                },
+                "example": {
+                  "message": "如该请求符合条件，我们将向对应邮箱发送说明。"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailInput"
+              },
+              "example": {
+                "email": "owner@restaurant.example"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/verify-email": {
+      "post": {
+        "operationId": "verifyEmail",
+        "summary": "消费邮箱验证令牌",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "description": "显式POST，以高熵purpose=verify_email令牌授权，不依赖ambient session。GET/邮件扫描不验证。原子消费、验证目标邮箱/到期/撤销；同一已成功令牌在有效且未撤销期间重试204，不重复副作用。失效不透露账号存在状态。",
+        "responses": {
+          "204": {
+            "description": "验证有效目标，账号可登录；不自动登录",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActionTokenInput"
+              },
+              "example": {
+                "token": "example_action_token_not_a_real_secret_123456"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "loginMerchant",
+        "summary": "邮箱密码登录并建立安全会话",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "AuthFlowCookie": [],
+            "CsrfToken": []
+          },
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "密码正确后才区分EMAIL_VERIFICATION_REQUIRED/ACCOUNT_UNAVAILABLE；不存在邮箱和错误密码统一401，不先查邮箱状态对外报错。成功轮换会话防固定，后端验证状态与撤销。",
+        "responses": {
+          "200": {
+            "description": "安全Cookie会话，JSON不含登录密钥",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                },
+                "example": {
+                  "user": {
+                    "id": "usr_example_owner_0001",
+                    "email": "owner@restaurant.example",
+                    "display_name": "Restaurant owner",
+                    "locale": "en",
+                    "status": "active",
+                    "email_verified_at": "2026-11-14T00:00:00Z",
+                    "created_at": "2026-11-14T00:00:00Z"
+                  },
+                  "session_expires_at": "2026-11-15T00:00:00Z",
+                  "csrf_token": "example_rotated_csrf_not_a_real_secret_123456"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginInput"
+              },
+              "example": {
+                "email": "owner@restaurant.example",
+                "password": "Example-only-not-a-real-password-2026"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/me": {
+      "get": {
+        "operationId": "getCurrentSession",
+        "summary": "读取当前有效会话与本人基础资料",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "仅本人公开身份视图",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionView"
+                },
+                "example": {
+                  "user": {
+                    "id": "usr_example_owner_0001",
+                    "email": "owner@restaurant.example",
+                    "display_name": "Restaurant owner",
+                    "locale": "en",
+                    "status": "active",
+                    "email_verified_at": "2026-11-14T00:00:00Z",
+                    "created_at": "2026-11-14T00:00:00Z"
+                  },
+                  "session_expires_at": "2026-11-15T00:00:00Z"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logoutCurrentSession",
+        "summary": "撤销当前会话",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "服务端撤销真实会话，不仅清浏览器Cookie。再次请求若会话已失效可401，不新建会话。",
+        "responses": {
+          "204": {
+            "description": "撤销当前会话并清Cookie",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "__Host-restaurant_session=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0"
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        }
+      }
+    },
+    "/auth/logout-all": {
+      "post": {
+        "operationId": "logoutAllSessions",
+        "summary": "验证当前密码后撤销全部会话",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "",
+        "responses": {
+          "204": {
+            "description": "包括当前设备的全部会话撤销",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutAllInput"
+              },
+              "example": {
+                "current_password": "Example-only-not-a-real-password-2026"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/password-reset-requests": {
+      "post": {
+        "operationId": "requestPasswordReset",
+        "summary": "请求找回密码邮件",
+        "tags": [
+          "Auth"
+        ],
+        "security": [
+          {
+            "AuthFlowCookie": [],
+            "CsrfToken": []
+          },
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "正确格式但不存在邮箱仍202；新reset请求按规则废弃旧令牌并限流，不取消当前会话直到真正改密。",
+        "responses": {
+          "202": {
+            "description": "统一受理，不泄露注册状态",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                },
+                "example": {
+                  "message": "如该请求符合条件，我们将向对应邮箱发送说明。"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailInput"
+              },
+              "example": {
+                "email": "owner@restaurant.example"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/password-reset": {
+      "post": {
+        "operationId": "resetPassword",
+        "summary": "凭一次性令牌重置密码",
+        "tags": [
+          "Auth"
+        ],
+        "security": [],
+        "description": "令牌绑定账号当前邮箱、purpose与有效期；重置密码、消费令牌和撤销全部会话原子执行。不自动登录；不借改密直接验证原未验证邮箱。",
+        "responses": {
+          "204": {
+            "description": "密码更新、动作令牌消费与全部会话撤销",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error410"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordInput"
+              },
+              "example": {
+                "token": "example_reset_token_not_a_real_secret_123456",
+                "new_password": "Example-only-not-a-real-password-2026"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/restaurants": {
+      "get": {
+        "operationId": "listMyRestaurants",
+        "summary": "列出本人有有效owner归属的餐厅",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "按created_at,id倒序，游标分页，仅本人餐厅",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestaurantList"
+                },
+                "example": {
+                  "items": [
+                    {
+                      "id": "rst_example_store_0001",
+                      "name": "Example Restaurant",
+                      "description": null,
+                      "cuisine_label": null,
+                      "country_code": null,
+                      "region": null,
+                      "city": null,
+                      "address_line1": null,
+                      "address_line2": null,
+                      "postal_code": null,
+                      "contact_email": null,
+                      "phone": null,
+                      "timezone": null,
+                      "currency_code": null,
+                      "primary_locale": "en",
+                      "slug": "example-restaurant-a1b2c3",
+                      "status": "draft",
+                      "reservation_enabled": false,
+                      "revision": 1,
+                      "role": "owner",
+                      "created_at": "2026-11-14T00:00:00Z",
+                      "updated_at": "2026-11-14T00:00:00Z",
+                      "readiness": {
+                        "ready_for_publication": false,
+                        "missing_fields": [
+                          "country_code",
+                          "city",
+                          "address_line1",
+                          "contact_email",
+                          "timezone",
+                          "currency_code",
+                          "opening_hours",
+                          "privacy_notice"
+                        ]
+                      }
+                    }
+                  ],
+                  "next_cursor": null,
+                  "has_more": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createRestaurant",
+        "summary": "创建餐厅草稿并绑定当前用户owner",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "由服务端分配id/slug/owner/status=draft/revision=1；新店reservation_enabled=false。餐厅和归属、审计同事务；先身份/权限再查去重。允许缺发布资料；重放同键不同初始内容409，原资源已关闭不重建。",
+        "responses": {
+          "201": {
+            "description": "创建或返回该幂等请求的同一餐厅当前视图",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              },
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "/api/v1/restaurants/{id}"
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "是否为同一user/key/初始请求的成功重放"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restaurant"
+                },
+                "example": {
+                  "id": "rst_example_store_0001",
+                  "name": "Example Restaurant",
+                  "description": null,
+                  "cuisine_label": null,
+                  "country_code": null,
+                  "region": null,
+                  "city": null,
+                  "address_line1": null,
+                  "address_line2": null,
+                  "postal_code": null,
+                  "contact_email": null,
+                  "phone": null,
+                  "timezone": null,
+                  "currency_code": null,
+                  "primary_locale": "en",
+                  "slug": "example-restaurant-a1b2c3",
+                  "status": "draft",
+                  "reservation_enabled": false,
+                  "revision": 1,
+                  "role": "owner",
+                  "created_at": "2026-11-14T00:00:00Z",
+                  "updated_at": "2026-11-14T00:00:00Z",
+                  "readiness": {
+                    "ready_for_publication": false,
+                    "missing_fields": [
+                      "country_code",
+                      "city",
+                      "address_line1",
+                      "contact_email",
+                      "timezone",
+                      "currency_code",
+                      "opening_hours",
+                      "privacy_notice"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestaurantCreateInput"
+              },
+              "example": {
+                "name": "Example Restaurant",
+                "primary_locale": "en"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/restaurants/{restaurantId}": {
+      "get": {
+        "operationId": "getMyRestaurant",
+        "summary": "读取自己餐厅资料及强ETag",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ],
+        "description": "不存在和不归属均404；平台特权另走审计接口，不能仅修改路径就访问别家店。",
+        "responses": {
+          "200": {
+            "description": "商家视图，不含凭据/内部任务/顾客资料",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restaurant"
+                },
+                "example": {
+                  "id": "rst_example_store_0001",
+                  "name": "Example Restaurant",
+                  "description": null,
+                  "cuisine_label": null,
+                  "country_code": null,
+                  "region": null,
+                  "city": null,
+                  "address_line1": null,
+                  "address_line2": null,
+                  "postal_code": null,
+                  "contact_email": null,
+                  "phone": null,
+                  "timezone": null,
+                  "currency_code": null,
+                  "primary_locale": "en",
+                  "slug": "example-restaurant-a1b2c3",
+                  "status": "draft",
+                  "reservation_enabled": false,
+                  "revision": 1,
+                  "role": "owner",
+                  "created_at": "2026-11-14T00:00:00Z",
+                  "updated_at": "2026-11-14T00:00:00Z",
+                  "readiness": {
+                    "ready_for_publication": false,
+                    "missing_fields": [
+                      "country_code",
+                      "city",
+                      "address_line1",
+                      "contact_email",
+                      "timezone",
+                      "currency_code",
+                      "opening_hours",
+                      "privacy_notice"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RestaurantId"
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateMyRestaurant",
+        "summary": "按固定白名单修改餐厅资料",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "缺字段保持原值，允许空字段显式null清空；name/primary_locale不可null。未知字段422，不接受owner/status/revision/reservation_enabled等系统字段。先授权，再比较If-Match；更新/审计/revision递增同事务。现有正式网页不会被草稿修改自动覆盖。",
+        "responses": {
+          "200": {
+            "description": "更新后资料及新ETag",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restaurant"
+                },
+                "example": {
+                  "id": "rst_example_store_0001",
+                  "name": "Example Restaurant",
+                  "description": "Merchant-approved description",
+                  "cuisine_label": null,
+                  "country_code": null,
+                  "region": null,
+                  "city": null,
+                  "address_line1": null,
+                  "address_line2": null,
+                  "postal_code": null,
+                  "contact_email": null,
+                  "phone": null,
+                  "timezone": null,
+                  "currency_code": null,
+                  "primary_locale": "en",
+                  "slug": "example-restaurant-a1b2c3",
+                  "status": "draft",
+                  "reservation_enabled": false,
+                  "revision": 2,
+                  "role": "owner",
+                  "created_at": "2026-11-14T00:00:00Z",
+                  "updated_at": "2026-11-14T00:00:00Z",
+                  "readiness": {
+                    "ready_for_publication": false,
+                    "missing_fields": [
+                      "country_code",
+                      "city",
+                      "address_line1",
+                      "contact_email",
+                      "timezone",
+                      "currency_code",
+                      "opening_hours",
+                      "privacy_notice"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Error428"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RestaurantId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestaurantPatchInput"
+              },
+              "example": {
+                "description": "Merchant-approved description"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/restaurants/{restaurantId}/opening-hours": {
+      "get": {
+        "operationId": "getOpeningHours",
+        "summary": "读取餐厅周营业段",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ],
+        "description": "",
+        "responses": {
+          "200": {
+            "description": "当前周规则，与餐厅资料共用ETag",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpeningHoursView"
+                },
+                "example": {
+                  "restaurant_id": "rst_example_store_0001",
+                  "restaurant_revision": 1,
+                  "timezone": null,
+                  "intervals": []
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RestaurantId"
+          }
+        ]
+      },
+      "put": {
+        "operationId": "replaceOpeningHours",
+        "summary": "整体替换周营业段",
+        "tags": [
+          "Restaurants"
+        ],
+        "security": [
+          {
+            "SessionCookie": [],
+            "CsrfToken": []
+          }
+        ],
+        "description": "先配置有效timezone；完整替换，intervals=[]表示无周营业段，不默认全天营业。校验周界跨午夜与同店区间重叠，单段大于0且不超过24h。仅修改草稿，不宣传座位可用；营业段与restaurant revision、审计同事务。旧If-Match重试412，须重读而非再累加。日期例外接口后续定义。",
+        "responses": {
+          "200": {
+            "description": "完整新周规则及新ETag",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ETag": {
+                "$ref": "#/components/headers/ETag"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpeningHoursView"
+                },
+                "example": {
+                  "restaurant_id": "rst_example_store_0001",
+                  "restaurant_revision": 2,
+                  "timezone": "Europe/London",
+                  "intervals": [
+                    {
+                      "weekday": 5,
+                      "opens_at_local": "18:00",
+                      "closes_at_local": "02:00",
+                      "closes_day_offset": 1,
+                      "accepts_requests": false,
+                      "sort_order": 0
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error400"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error401"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error404"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error409"
+          },
+          "412": {
+            "$ref": "#/components/responses/Error412"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error415"
+          },
+          "422": {
+            "$ref": "#/components/responses/Error422"
+          },
+          "428": {
+            "$ref": "#/components/responses/Error428"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error429"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error503"
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RestaurantId"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpeningHoursInput"
+              },
+              "example": {
+                "intervals": [
+                  {
+                    "weekday": 5,
+                    "opens_at_local": "18:00",
+                    "closes_at_local": "02:00",
+                    "closes_day_offset": 1,
+                    "accepts_requests": false,
+                    "sort_order": 0
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "details": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "code": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              },
+              "required": [
+                "field",
+                "code"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "request_id",
+          "details"
+        ],
+        "additionalProperties": false
+      },
+      "Accepted": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "RegistrationPolicy": {
+        "type": "object",
+        "properties": {
+          "terms_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "terms_url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "format": "uri-reference"
+          },
+          "privacy_notice_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "privacy_url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "format": "uri-reference"
+          },
+          "supported_locales": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 30,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 35,
+              "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+            }
+          },
+          "password_min_length": {
+            "type": "integer",
+            "const": 15
+          },
+          "password_max_length": {
+            "type": "integer",
+            "const": 128
+          }
+        },
+        "required": [
+          "terms_version",
+          "terms_url",
+          "privacy_notice_version",
+          "privacy_url",
+          "supported_locales",
+          "password_min_length",
+          "password_max_length"
+        ],
+        "additionalProperties": false
+      },
+      "CsrfResponse": {
+        "type": "object",
+        "properties": {
+          "csrf_token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "csrf_token",
+          "expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "RegisterInput": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "format": "email"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 15,
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "本契约建议长度15–128字符；不截断、不强制周期改密；服务端检查弱/泄露密码，算法待技术方案确认。"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 100
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          },
+          "terms_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "accepted_terms": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "email",
+          "password",
+          "locale",
+          "terms_version",
+          "accepted_terms"
+        ],
+        "additionalProperties": false
+      },
+      "EmailInput": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "format": "email"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "ActionTokenInput": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
+      },
+      "LoginInput": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "format": "email"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
+      },
+      "LogoutAllInput": {
+        "type": "object",
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "current_password"
+        ],
+        "additionalProperties": false
+      },
+      "ResetPasswordInput": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "writeOnly": true
+          },
+          "new_password": {
+            "type": "string",
+            "minLength": 15,
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "本契约建议长度15–128字符；不截断、不强制周期改密；服务端检查弱/泄露密码，算法待技术方案确认。"
+          }
+        },
+        "required": [
+          "token",
+          "new_password"
+        ],
+        "additionalProperties": false
+      },
+      "CurrentUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]{16,64}$"
+          },
+          "email": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 254,
+            "format": "email"
+          },
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active"
+            ]
+          },
+          "email_verified_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "locale",
+          "status",
+          "email_verified_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "SessionView": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/CurrentUser"
+          },
+          "session_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "user",
+          "session_expires_at"
+        ],
+        "additionalProperties": false
+      },
+      "LoginResponse": {
+        "type": "object",
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/CurrentUser"
+          },
+          "session_expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "csrf_token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "user",
+          "session_expires_at",
+          "csrf_token"
+        ],
+        "additionalProperties": false
+      },
+      "RestaurantCreateInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cuisine_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 2,
+                "pattern": "^[A-Z]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line1": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 254,
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 16,
+                "pattern": "^\\+[1-9][0-9]{6,14}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "真实IANA时区或UTC，由后端白名单/时区数据库验证，不能仅做格式检查。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3,
+                "pattern": "^[A-Z]{3}$",
+                "description": "后端核对支持的真实币种，不做自动价格换算。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "primary_locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          }
+        },
+        "required": [
+          "name",
+          "primary_locale"
+        ],
+        "additionalProperties": false
+      },
+      "RestaurantPatchInput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cuisine_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 2,
+                "pattern": "^[A-Z]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line1": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 254,
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 16,
+                "pattern": "^\\+[1-9][0-9]{6,14}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "真实IANA时区或UTC，由后端白名单/时区数据库验证，不能仅做格式检查。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3,
+                "pattern": "^[A-Z]{3}$",
+                "description": "后端核对支持的真实币种，不做自动价格换算。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "primary_locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          }
+        },
+        "required": [],
+        "additionalProperties": false,
+        "minProperties": 1
+      },
+      "Readiness": {
+        "type": "object",
+        "properties": {
+          "ready_for_publication": {
+            "type": "boolean"
+          },
+          "missing_fields": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 30,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          }
+        },
+        "required": [
+          "ready_for_publication",
+          "missing_fields"
+        ],
+        "additionalProperties": false
+      },
+      "Restaurant": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cuisine_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "country_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 2,
+                "pattern": "^[A-Z]{2}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line1": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "address_line2": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "postal_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contact_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 254,
+                "format": "email"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 16,
+                "pattern": "^\\+[1-9][0-9]{6,14}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "真实IANA时区或UTC，由后端白名单/时区数据库验证，不能仅做格式检查。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 3,
+                "pattern": "^[A-Z]{3}$",
+                "description": "后端核对支持的真实币种，不做自动价格换算。"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "primary_locale": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 35,
+            "pattern": "^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]{16,64}$"
+          },
+          "slug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "active",
+              "suspended",
+              "archived"
+            ]
+          },
+          "reservation_enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "owner"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/Readiness"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "cuisine_label",
+          "country_code",
+          "region",
+          "city",
+          "address_line1",
+          "address_line2",
+          "postal_code",
+          "contact_email",
+          "phone",
+          "timezone",
+          "currency_code",
+          "primary_locale",
+          "id",
+          "slug",
+          "status",
+          "reservation_enabled",
+          "revision",
+          "role",
+          "created_at",
+          "updated_at",
+          "readiness"
+        ],
+        "additionalProperties": false
+      },
+      "RestaurantList": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/Restaurant"
+            }
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "additionalProperties": false
+      },
+      "OpeningInterval": {
+        "type": "object",
+        "properties": {
+          "weekday": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 7
+          },
+          "opens_at_local": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 5,
+            "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+          },
+          "closes_at_local": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 5,
+            "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"
+          },
+          "closes_day_offset": {
+            "type": "integer",
+            "enum": [
+              0,
+              1
+            ]
+          },
+          "accepts_requests": {
+            "type": "boolean"
+          },
+          "sort_order": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          }
+        },
+        "required": [
+          "weekday",
+          "opens_at_local",
+          "closes_at_local",
+          "closes_day_offset",
+          "accepts_requests",
+          "sort_order"
+        ],
+        "additionalProperties": false
+      },
+      "OpeningHoursInput": {
+        "type": "object",
+        "properties": {
+          "intervals": {
+            "type": "array",
+            "maxItems": 21,
+            "items": {
+              "$ref": "#/components/schemas/OpeningInterval"
+            }
+          }
+        },
+        "required": [
+          "intervals"
+        ],
+        "additionalProperties": false
+      },
+      "OpeningHoursView": {
+        "type": "object",
+        "properties": {
+          "restaurant_id": {
+            "type": "string",
+            "minLength": 16,
+            "maxLength": 64,
+            "pattern": "^[A-Za-z0-9_-]{16,64}$"
+          },
+          "restaurant_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "timezone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intervals": {
+            "type": "array",
+            "maxItems": 21,
+            "items": {
+              "$ref": "#/components/schemas/OpeningInterval"
+            }
+          }
+        },
+        "required": [
+          "restaurant_id",
+          "restaurant_revision",
+          "timezone",
+          "intervals"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "parameters": {
+      "RestaurantId": {
+        "name": "restaurantId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9_-]{16,64}$"
+        }
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "pattern": "^\"restaurant-[A-Za-z0-9_-]{16,64}-v[1-9][0-9]*\"$"
+        },
+        "description": "GET返回的强ETag；先授权再比较。缺失428，格式错误400，版本过期412。"
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_.:-]{16,128}$"
+        },
+        "description": "创建餐厅按当前user_id+key去重；相同键不同规范化输入409。"
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "description": "服务端签名/不透明游标，绑定用户、排序及查询，不允许跨账号使用。"
+      }
+    },
+    "headers": {
+      "CacheControl": {
+        "schema": {
+          "type": "string",
+          "const": "no-store"
+        },
+        "description": "账号与商家数据不允许共享缓存。"
+      },
+      "RequestId": {
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "description": "服务端请求标识，错误体request_id与之对应。"
+      },
+      "ETag": {
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "description": "同一餐厅资料及周营业段共用restaurant revision。"
+      },
+      "RetryAfter": {
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "description": "限流后至少等待的秒数；请求方仍须遵守退避。"
+      },
+      "SessionCookie": {
+        "schema": {
+          "type": "string"
+        },
+        "description": "__Host-restaurant_session=...; Path=/; Secure; HttpOnly; SameSite=Lax。不得在JSON返回会话密钥，不允许Domain属性。"
+      },
+      "AuthFlowCookie": {
+        "schema": {
+          "type": "string"
+        },
+        "description": "未登录时设置短期__Host-restaurant_authflow；Path=/; Secure; HttpOnly; SameSite=Lax。CSRF token绑定此上下文。"
+      },
+      "WwwAuthenticate": {
+        "schema": {
+          "type": "string",
+          "const": "Session realm=\"restaurant-platform\""
+        },
+        "description": "401所需认证挑战；Session是本平台声明的Cookie会话协议，不伪装成HTTP Basic或Bearer。前端转登录流程，不在URL传会话密钥。"
+      }
+    },
+    "responses": {
+      "Error400": {
+        "description": "请求格式不合法",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "REQUEST_INVALID",
+              "message": "请求格式不合法",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error401": {
+        "description": "认证失效或登录凭据不正确",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "WWW-Authenticate": {
+            "$ref": "#/components/headers/WwwAuthenticate"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "UNAUTHENTICATED",
+              "message": "认证失效或登录凭据不正确",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error403": {
+        "description": "禁止操作、邮箱尚未验证或账号不可用",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "FORBIDDEN",
+              "message": "禁止操作、邮箱尚未验证或账号不可用",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error404": {
+        "description": "对象不存在或不属于当前商家",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "NOT_FOUND",
+              "message": "对象不存在或不属于当前商家",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error409": {
+        "description": "同一幂等键内容冲突或当前业务状态不允许",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "CONFLICT",
+              "message": "同一幂等键内容冲突或当前业务状态不允许",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error410": {
+        "description": "动作令牌过期或失效",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "ACTION_TOKEN_EXPIRED",
+              "message": "动作令牌过期或失效",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error412": {
+        "description": "If-Match与当前版本不匹配",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "REVISION_CONFLICT",
+              "message": "If-Match与当前版本不匹配",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error415": {
+        "description": "仅接受application/json",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "UNSUPPORTED_MEDIA_TYPE",
+              "message": "仅接受application/json",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error422": {
+        "description": "字段或语义校验失败",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "VALIDATION_FAILED",
+              "message": "字段或语义校验失败",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error428": {
+        "description": "缺少If-Match",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "PRECONDITION_REQUIRED",
+              "message": "缺少If-Match",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error429": {
+        "description": "触发速率限制",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          },
+          "Retry-After": {
+            "$ref": "#/components/headers/RetryAfter"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "RATE_LIMITED",
+              "message": "触发速率限制",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      },
+      "Error503": {
+        "description": "必要服务不可用，不返回假成功",
+        "headers": {
+          "Cache-Control": {
+            "$ref": "#/components/headers/CacheControl"
+          },
+          "X-Request-Id": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "code": "SERVICE_UNAVAILABLE",
+              "message": "必要服务不可用，不返回假成功",
+              "request_id": "req_example_0001",
+              "details": []
+            }
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "SessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-restaurant_session",
+        "description": "建议的不透明安全会话Cookie；服务端每次校验有效期、撤销、用户状态和归属。"
+      },
+      "AuthFlowCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-restaurant_authflow",
+        "description": "短期匿名认证上下文，不授予业务权限。"
+      },
+      "CsrfToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "description": "绑定session或authflow的token。服务端同时检查允许的Origin；不能只检查有无header。"
+      }
+    }
+  },
+  "x-implementation-status": "contract-only",
+  "x-required-acceptance": [
+    "注册/找回不泄露邮箱存在性，密码不明文存储",
+    "邮箱未验证不能创建商家登录会话",
+    "会话撤销与跨餐厅授权真实执行",
+    "新店和owner原子创建，创建请求幂等",
+    "未知系统字段拒绝，If-Match防并发覆盖",
+    "营业段跨午夜、周界和时区语义正确",
+    "JSON示例/引用测试不代表真实API与数据库验收通过"
+  ]
+}
