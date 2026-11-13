@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>餐厅 AI 建站项目 · 可行性分析</title>
+<style>
+:root{color-scheme:light;--ink:#252525;--muted:#787878;--line:#e7e7e7;--accent:#41665a}*{box-sizing:border-box}body{margin:0;background:#fff;color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.85;font-weight:400}main{max-width:920px;margin:auto;padding:76px 48px 96px}.eyebrow{font-size:12px;color:var(--muted);letter-spacing:1px}h1{font-size:29px;font-weight:500;line-height:1.5;margin:18px 0 12px}h2{font-size:19px;font-weight:500;margin:52px 0 16px}h3{font-size:15px;font-weight:500;margin:24px 0 8px}p{margin:10px 0}strong{font-weight:500}.intro{font-size:17px;line-height:1.9;margin:26px 0 34px}.note{font-size:12px;color:var(--muted)}.rule{border-top:1px solid var(--line);margin:30px 0}.callout{border-left:2px solid var(--accent);padding:4px 0 4px 20px;margin:24px 0}.flow{display:grid;grid-template-columns:1fr 24px 1fr 24px 1fr;align-items:center;margin:32px 0}.step{border-top:1px solid var(--line);padding:18px 0}.step small{display:block;color:var(--muted);font-size:12px}.arrow{color:#999;text-align:center}table{width:100%;border-collapse:collapse;font-size:13px;margin:16px 0}td,th{text-align:left;vertical-align:top;padding:13px 10px;border-bottom:1px solid var(--line);font-weight:400}th{font-weight:500;color:#666}ul,ol{padding-left:22px}li{margin:9px 0}a{color:#41665a;text-decoration:none;border-bottom:1px solid #c9d5d0}.sources{font-size:12px;overflow-wrap:anywhere}.grid{display:grid;grid-template-columns:1fr 1fr;gap:34px}.kicker{color:var(--accent);font-size:12px}.foot{margin-top:48px;color:var(--muted);font-size:12px}@media(max-width:650px){main{padding:40px 24px 64px}h1{font-size:24px}.grid{grid-template-columns:1fr;gap:0}.flow{grid-template-columns:1fr}.arrow{transform:rotate(90deg);padding:4px}table{font-size:12px}td,th{padding:10px 6px}}@media print{main{padding:25px;max-width:none}h2{break-after:avoid}table,.callout{break-inside:avoid}a{color:inherit}}
+</style>
+</head>
+<body>
+<main>
+<div class="eyebrow">项目可行性研究 · 2026 / 11 / 13</div>
+<h1>上传菜单，生成餐厅官网，接好预订并上线</h1>
+<p class="note">目标市场：欧美独立餐厅。本文区分官方已核查信息、产品判断与待验证假设；美元价格对应海外市场，报价会变动。</p>
+<p class="intro">技术上能做，商业上值得小规模验证。但最有机会的定位不是“又一个 AI 建站器”，而是<strong>替餐厅做好并持续维护官网，接通现有预订，让顾客更容易看菜单、找到店、订到位</strong>。</p>
+<div class="callout">生成网页是低门槛部分；商家愿意付费、授权接入与迁移、长期维护不吞掉利润，才是项目成立的条件。</div>
+
+<h2>01 · 需求存在，但不是每家餐厅都需要新官网</h2>
+<p>餐厅独立官网是品牌自有入口，但不是法定标配，也不是所有餐厅的第一获客渠道。Google Business Profile、Instagram、外卖和预订平台已经解决了很多“发现—看信息—下单/订位”的需求。</p>
+<p>因此，不能把“有很多餐厅”直接换算成“有很多付费客户”。更强的购买理由是：现有网站陈旧、手机上菜单难读、营业时间不准、订位入口难找、每次改价都要找人。</p>
+<div class="grid">
+<div><h3>更适合首批验证</h3><ul><li>独立堂食餐厅，已有官网但体验较差。</li><li>已经使用一种预订平台，不想换后台。</li><li>有真实照片和稳定品牌，希望降低维护负担。</li><li>已有搜索或社媒流量，改站后才有机会观察转化变化。</li></ul></div>
+<div><h3>不宜优先覆盖</h3><ul><li>几乎没有线上流量、只想“自动带来客人”的店。</li><li>快餐/外卖为主、餐桌预订价值很低的店。</li><li>要求高度定制品牌创意的高端客户。</li><li>要复杂总部审批、POS和会员打通的大型连锁。</li></ul></div>
+</div>
+<p><strong>首发范围：一个国家、一个城市、一个细分餐厅群体。</strong>美国可先围绕 OpenTable 或 Resy；欧洲选一个国家再研究当地生态。若你在某地已有可信商家或服务商渠道，应优先利用渠道，而不是因为市场看起来更大就选美国。不要同时启动“整个欧美”。</p>
+
+<h2>02 · 最重要的市场事实：相近产品已经存在</h2>
+<table>
+<thead><tr><th>产品</th><th>与本项目的重叠</th><th>官方价格/限制</th></tr></thead>
+<tbody>
+<tr><td><a href="https://www.wix.com/restaurant/website">Wix Restaurants</a></td><td>描述餐厅→AI生成网站；导入PDF、图片或CSV菜单；发布；餐桌预订、点餐和营销。与最初设想高度重叠。</td><td>美国支持相关支付/在线预订功能的方案 Core 起 $29/月，按年计费，未含税；免费方案也可建站发布，但有付费功能限制。</td></tr>
+<tr><td><a href="https://get.popmenu.com/pricing">Popmenu</a></td><td>餐厅官网、交互菜单、Google Business Profile同步、营销与预订相关功能。AI重点在营销内容，不等于已核实AI自助建站。</td><td>Starter/Essentials/Premier 年预付折合 $159/$269/$449 每月；月付 $179/$299/$499。预订在高档方案包含，部分低档可另购；其余附加功能可能另计费。</td></tr>
+<tr><td><a href="https://www.owner.com/pricing">Owner.com</a></td><td>AI优化网站、SEO、直接点餐、品牌App与营销。核心是直营订单，不应混同餐桌预订。</td><td>$249/月＋每单5%餐厅费，或 $499/月、无额外餐厅每单费；不同方案不能只比较月费。</td></tr>
+<tr><td><a href="https://www.getbento.com">BentoBox / Clover</a></td><td>餐厅网站与营销商业化方案，现并入Clover生态。</td><td>官网明确目前新客户仅限Clover POS客户；未见当前独立公开报价，不沿用旧报价。</td></tr>
+</tbody>
+</table>
+<p>这些产品证明餐厅数字化存在付费需求，<strong>不证明餐厅愿意为“AI主页”单独付费</strong>。Wix已验证功能重叠尤其强，你不能把“菜单上传＋AI建站＋预订”当作独有护城河。</p>
+<p>可尝试的差异化是：少操作、快速迁移、保留原预订后台、真实且好看的品牌呈现、持续更新和明确支持范围。你是在竞争“省心的结果”，而不只是竞争生成能力。</p>
+
+<h2>03 · 预订能接，但必须区分三个层级</h2>
+<table>
+<thead><tr><th>层级</th><th>你实际提供什么</th><th>难度与边界</th></tr></thead>
+<tbody>
+<tr><td>官方链接 / widget</td><td>按钮跳转到官方预订页面，或安装平台提供的嵌入组件。</td><td>适合MVP。餐厅需已有相关账户与使用权限；套餐或平台费用另算。库存、确认、改约由原平台处理。</td></tr>
+<tr><td>完整授权API</td><td>自己做订位界面，读取时段、创建和取消预订、接收回调。</td><td>先确认合作资格、逐店授权、权限与条款。不能从“有widget”推断“完整API向任何开发者开放”。</td></tr>
+<tr><td>自建预订系统</td><td>独立管理桌位、容量、时长、候位、取消、订金和通知。</td><td>是另一个业务产品。需要可靠的库存事务与店内工作流，不宜捆绑到首版建站工具。</td></tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Resy：</strong>官方文档明确可在餐厅 Dashboard 的 Venue → Basic Info → Widget 取代码。BentoBox 的既有集成可使用 Venue ID 和 API Key；这不是任意第三方都获完整API权限的证明。</li>
+<li><strong>OpenTable：</strong>有官方widget说明与集成合作入口；本次未确认可自助获取完整预订读写API，仍需平台书面确认。</li>
+<li><strong>TheFork：</strong>官方明确 TheFork Manager 提供可定制网站预订widget；“widget免费”不意味着整套服务免费，套餐和接入条件应逐店核实。</li>
+</ul>
+<div class="callout"><strong>第一版保留餐厅原有预订系统，先支持一种官方入口。</strong>菜单可以由AI提取，网站可以由AI生成；真实库存和预订成功与否必须由可靠系统决定，不能让模型凭文字判断。</div>
+<p>每家店只设一个权威桌位库存来源。网站、第三方入口和店内手动预订应回到同一账本；两套独立系统各自卖同一张桌子，就有超订风险。</p>
+<p>测量也有边界：按钮点击量≠成功预订量。跨域跳转或widget未提供授权回调时，只能诚实报告点击；完成量需通过获准的回调、报表或商家提供的数据核对。不能承诺“接上官网即可免除原平台费用”。</p>
+
+<h2>04 · 自动化一条龙可行，但不是“只上传菜单就上线”</h2>
+<div class="flow">
+<div class="step"><strong>菜单与品牌输入</strong><small>菜单、真实照片、地址、时间、预订入口</small></div><div class="arrow">→</div>
+<div class="step"><strong>AI草稿＋商家确认</strong><small>提取菜品和价格；选择风格；核实事实</small></div><div class="arrow">→</div>
+<div class="step"><strong>发布与持续维护</strong><small>域名、HTTPS、更新、回滚、入口检查</small></div>
+</div>
+<p><strong>技术建议：</strong>用稳定组件和餐厅数据结构控制生成。AI选择布局、生成文案与样式配置；发布走受控管线。不要让每家店变成一套未经审查、任意执行的AI代码，后续维护和安全问题会抵消生成收益。</p>
+<p>首版无需让模型任意修改整个网站。提供少量高质量风格、标准页面与受控编辑，就能覆盖多数独立餐厅。产品重点是手机端菜单、订位、营业时间与地址，不是复杂动画。</p>
+<ul>
+<li><strong>必须补齐：</strong>店名、地址、联系方式、营业/节假日时间、币种、真实照片、已有预订服务、域名控制权。菜单本身不包含这些上线必需事实。</li>
+<li><strong>不能编：</strong>菜价、食材、过敏原、无麸质声明、奖项、评价、营业时间。缺失字段应要求确认；图片不能把不存在的菜品冒充实拍。</li>
+<li><strong>上线前：</strong>餐厅确认事实与品牌，完成发布授权；域名连接和第三方授权需配合，不能保证绝对零人工。</li>
+<li><strong>优化旧站：</strong>先审计和预览，不一定要迁移；迁移前盘点URL、SEO内容、域名、邮件DNS和平台限制。保留必要重定向，不随意改变邮箱解析。</li>
+<li><strong>长期维护：</strong>更新菜单、节假日信息、组件兼容性、监控和回滚；平台第三方组件故障也可能变成你的客服负担。</li>
+<li><strong>隐私与无障碍：</strong>按国家落实个人信息、第三方组件和营销同意要求；做好基础无障碍测试。不要声称AI自动生成就等于GDPR、ADA或所有无障碍法规合规。</li>
+</ul>
+
+<h2>05 · 收费能做，利润主要取决于人工服务</h2>
+<p>以下均是<strong>待验证的定价与成本假设</strong>，不是市场均值或已实现收入。</p>
+<p>可测试“<strong>$299 上线费＋$79/月托管维护</strong>”，同时测试 $49–99/月的接受度。清楚限制改稿和支持范围。第三方预订订阅、短信/支付、域名与高级定制另行说明；不要用无限修改吸引用户。</p>
+<table>
+<thead><tr><th>示例：每店每月</th><th>假设金额</th></tr></thead>
+<tbody>
+<tr><td>收入</td><td>$79</td></tr>
+<tr><td>分摊托管/存储＋按合理频次生成</td><td>$10</td></tr>
+<tr><td>支付收款成本、邮件与监控分摊</td><td>$4</td></tr>
+<tr><td>支持：0.5小时 × $40/小时</td><td>$20</td></tr>
+<tr><td>扣除上述成本后的贡献</td><td>$45，约57%</td></tr>
+</tbody>
+</table>
+<p>若月获客成本为 $180，上述 $45/月贡献对应约4个月回收；这里不计上线费贡献，也未计研发、固定人员、税费、退款和流失。若每店每月需1.5小时支持，支持成本变成 $60，贡献只剩 $5。实际模型频次、售后和第三方服务报价必须实测。</p>
+<p><strong>建一次官网是低频需求。</strong>月费价值应来自可靠托管、菜单与时间更新、订位入口健康检查和可理解的运营数据，而非要求商家每月使用AI聊天。“更快做网页”降低你的成本，并不会自动提高商家的支付意愿。</p>
+<p>也不要承诺“上线就有订单”。官网主要承接已有需求；SEO和新增获客受地理位置、品牌、评价、搜索竞争等影响，不能靠生成页面保证排名。</p>
+
+<h2>06 · 获客往往比生成更难</h2>
+<p>餐厅老板未必想学一个新工具，也可能对陌生服务商缺乏信任。前期不要只靠“AI建站”广告，应展示具体差异：手机菜单可读、改价不用找人、顾客少一步完成订位。</p>
+<p>可在一个城市围绕明确网站问题提供经授权的改版预览，再让商家付费上线；也可与当地摄影师、餐厅营销或建站服务商合作，由他们提供商家关系。任何个性化外联都需尊重所在地反垃圾信息规定，不建议依靠大批量群发。</p>
+<p>先以服务辅助产品验证：人工把前几家交付完成，记录究竟卡在信息收集、域名授权、菜单核验还是审美。再自动化重复环节。不要在获客与支付意愿未验证前开发全部平台。</p>
+
+<h2>07 · 建议的最小版本与验证门槛</h2>
+<h3>首版做这些</h3>
+<ol>
+<li>上传菜单，提取成可编辑结构；商家确认菜名、价格与必需事实。</li>
+<li>少量高质量风格：主页、手机菜单、营业时间/地址、预订入口。</li>
+<li>连接一种官方预订widget或链接，不建第二套库存。</li>
+<li>商家预览确认后发布：托管、HTTPS、域名接入说明和版本回滚。</li>
+<li>提供菜单和时间更新，以及明确口径的基础访问/入口点击数据。</li>
+</ol>
+<p>首版不做自建桌位库存、全平台双向同步、POS、CRM、外卖支付、AI电话和复杂营销。若没有预订服务的餐厅只需申请表，必须标为“待餐厅确认”，不能伪装成即时订位成功。</p>
+<h3>先验证，再投入完整平台</h3>
+<ul>
+<li>访谈约20家符合目标的餐厅，用真实菜单做具体演示；重点问现在由谁维护、花多少精力、什么原因不换站。</li>
+<li>争取5家真正付费试点。免费试用和口头称赞不能代替支付验证。</li>
+<li>记录上线前后商家耗时与支持工时；可把商家累计操作不超过30分钟、标准站内部人工交付不超过1小时设为目标，而非承诺。</li>
+<li>跟踪至少1–3个月的续费意愿、菜单更新、客服需求。每店月维护人工争取降到15分钟左右，实际成本再复算。</li>
+<li>有足够流量与获准数据时，观察菜单阅读、入口点击及实际预订；避免把季节性变化误当改版成果。</li>
+</ul>
+<p><strong>继续做的信号：</strong>商家愿意付费并续用、授权和上线可重复、人工成本可控，且有稳定获客路径。<strong>应调整的信号：</strong>商家只愿付一次低价、每店都无限改稿、需要你同时替换店内系统，或现有平台已把需求全部解决。</p>
+
+<div class="rule"></div>
+<p class="intro">最终判断：<strong>值得做一个“小而窄”的付费试点，不值得直接重押“欧美全餐饮AI建站平台”。</strong>把AI用来降低交付成本，把省心、可靠和持续维护作为商家购买的理由。能否建立低成本商家渠道，比生成网页是否炫酷更决定商业结果。</p>
+
+<h2>官方来源</h2>
+<ol class="sources">
+<li><a href="https://www.wix.com/restaurant/website">Wix Restaurants：AI、菜单导入、预订与美国年付价格</a></li>
+<li><a href="https://get.popmenu.com/pricing">Popmenu：套餐、月付/年付价格与预订功能</a></li>
+<li><a href="https://www.owner.com/pricing">Owner.com：月费、餐厅订单收费与包含功能</a></li>
+<li><a href="https://www.getbento.com">BentoBox：Clover整合及新客户限制</a></li>
+<li><a href="https://helpdesk.resy.com/en_us/booking-button-installation-Skx_7ueNo">Resy：官方widget安装说明及既有BentoBox集成</a></li>
+<li><a href="https://support.opentable.com/s/article/How-do-I-install-the-reservation-widget-to-take-reservations-on-my-website-and-Facebook">OpenTable：widget说明（本次通过官方搜索索引核实，正文抓取受限）</a></li>
+<li><a href="https://www.opentable.com/restaurant-solutions/integrations/">OpenTable：集成合作与商务入口</a></li>
+<li><a href="https://www.theforkmanager.com/en/attract-more-diners">TheFork Manager：官方网站预订widget</a></li>
+</ol>
+<div class="foot">研究日期：2026-11-13。官方功能与收费以实际地区、套餐和合同为准；未核实API不等于API不存在。未使用竞品宣传增长数据作为效果证明，未推算未经验证的市场规模。</div>
+</main>
+</body>
+</html>
