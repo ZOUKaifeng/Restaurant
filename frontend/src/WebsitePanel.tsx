@@ -6,14 +6,21 @@ import type { Asset, AssetKind } from './assets-types';
 import { profileFields } from './profile';
 import type { Restaurant } from './types';
 import {
-  isWebsiteJobActive, isWebsiteWriteUncertain, rewriteWebsitePreview, safeLocalPublicationUrl,
+  isWebsiteJobActive, isWebsiteWriteUncertain, safeLocalPublicationUrl,
   websiteApi, websiteErrorMessage, websiteJobErrorMessage, websiteSlugPattern,
 } from './website-api';
+import {
+  buildPreviewDocument, previewImageUrl, rewriteWebsitePreview, textDataUrl,
+} from './website-preview';
 import type { WebsiteAccepted, WebsiteAttempt, WebsiteDiagnostic, WebsiteJob, WebsiteModelCall, WebsiteProgress, WebsiteState, WebsiteUsage, WebsiteVersion } from './website-types';
 
 type Draft = { brief: string; assetIds: string[]; message: string; confirmed: boolean };
 type Saved = Pick<Draft, 'brief' | 'assetIds'>;
-type Preview = { versionId: string; html: string; checksum: string; pdfs: Array<{ id: string; url: string }> };
+type Preview = {
+  versionId: string; checksum: string; documentUrl: string; fullUrl: string; reducedImages: number;
+  pdfs: Array<{ id: string; url: string }>; originals: Array<{ id: string; url: string; label: string }>;
+};
+
 type Acknowledged = WebsiteAccepted & { kind: 'chat' | 'generate' };
 const kindLabels: Record<AssetKind, string> = { menu_source: '菜单原文件', logo: 'Logo', restaurant_photo: '餐厅图片', dish_photo: '菜品图片' };
 const jobLabels = { queued: '排队中', running: '正在处理', succeeded: '已完成', failed: '已失败' };
@@ -687,21 +694,45 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     setPreviewError(null);
     const created: string[] = [];
     try {
-      const document = await websiteApi.preview(restaurant.id, version, controller.signal);
-      const urls = new Map<string, string>();
-      // 仅下载此版本列出的已知素材字节；PDF 只提供 blob 下载，不嵌入 iframe。
-      for (const asset of document.assets) {
+      const previewDoc = await websiteApi.preview(restaurant.id, version, controller.signal);
+      const blobs = new Map<string, Blob>();
+      const downloadUrls = new Map<string, string>();
+      // 仅下载此版本列出的已知素材字节；原图 blob 地址用于新窗口预览与下载。
+      for (const asset of previewDoc.assets) {
         const blob = await websiteApi.assetContent(restaurant.id, asset, controller.signal);
         if (controller.signal.aborted) return;
+        blobs.set(asset.id, blob);
         const url = URL.createObjectURL(blob);
         created.push(url);
-        urls.set(asset.id, url);
+        downloadUrls.set(asset.id, url);
       }
-      const html = rewriteWebsitePreview(document.html, urls);
+      const inlineUrls = new Map<string, string>();
+      const images: Array<{ id: string; length: number }> = [];
+      for (const asset of previewDoc.assets) {
+        if (asset.mime_type === 'application/pdf') {
+          inlineUrls.set(asset.id, textDataUrl('菜单 PDF 请在预览区下方下载原文件。'));
+          continue;
+        }
+        const url = await previewImageUrl(blobs.get(asset.id)!);
+        if (controller.signal.aborted) return;
+        inlineUrls.set(asset.id, url);
+        images.push({ id: asset.id, length: url.length });
+      }
+      const { documentUrl, reducedImages } = buildPreviewDocument(previewDoc.html, inlineUrls, images);
+      const fullUrl = URL.createObjectURL(new Blob(
+        [rewriteWebsitePreview(previewDoc.html, downloadUrls)],
+        { type: 'text/html;charset=utf-8' },
+      ));
+      created.push(fullUrl);
       if (controller.signal.aborted) return;
       urlsRef.current = created;
-      setPreview({ versionId: version.id, html, checksum: document.checksum,
-        pdfs: document.assets.filter(asset => asset.mime_type === 'application/pdf').map(asset => ({ id: asset.id, url: urls.get(asset.id)! })),
+      setPreview({
+        versionId: version.id, checksum: previewDoc.checksum, documentUrl, fullUrl, reducedImages,
+        pdfs: previewDoc.assets.filter(asset => asset.mime_type === 'application/pdf')
+          .map(asset => ({ id: asset.id, url: downloadUrls.get(asset.id)! })),
+        originals: previewDoc.assets.filter(asset => asset.mime_type !== 'application/pdf')
+          .map((asset, index) => ({ id: asset.id, url: downloadUrls.get(asset.id)!,
+            label: `图片${index + 1}.${asset.mime_type === 'image/png' ? 'png' : 'jpg'}` })),
       });
     } catch (caught) {
       if (mountedRef.current && !controller.signal.aborted) setPreviewError(caught);
@@ -759,7 +790,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     })}</ul></section>}
     <section className="website-section" aria-labelledby={`${prefix}-versions-title`}><h3 id={`${prefix}-versions-title`}>03 / 网页版本与预览</h3><p className="micro">最近 20 个版本。预览不发布；选择旧版本也不会自动回滚。</p>{versions.length === 0 && !loading && <p className="micro website-empty">尚无生成版本。后台任务成功后，真实版本会显示在这里。</p>}<ul className="website-versions">{versions.map(version => <li key={version.id} className={selectedId === version.id ? 'selected' : ''}><button type="button" className="text-button" aria-pressed={selectedId === version.id} onClick={() => { setSelectedId(version.id); setPublicationConfirmed(false); setPublishTarget(null); }}><span>版本 {version.version_number}{state?.publication.published_version_id === version.id ? publicationNeedsCheck || checking || !!loadError ? ' · 上次读取的发布版本' : ' · 当前本地发布' : ''}</span><time className="micro" dateTime={version.created_at}>{formatTime(version.created_at)}</time><span className="website-summary">{version.summary}</span></button><button type="button" disabled={previewPending || !active} onClick={() => { setSelectedId(version.id); setPublicationConfirmed(false); setPublishTarget(null); void openPreview(version); }}>预览此版本</button></li>)}</ul>
       {previewPending && <div className="notice" role="status"><p>正在读取安全网页文档与此版本的授权素材…</p><button type="button" className="text-button" onClick={closePreview}>取消预览</button></div>}<ErrorMessage error={previewError} readOnly />
-      {preview && <section className="website-preview" aria-labelledby={`${prefix}-preview-title`}><div className="row-heading"><h3 id={`${prefix}-preview-title`}>预览版本 {state?.versions.find(version => version.id === preview.versionId)?.version_number ?? '已生成'}</h3><button type="button" className="text-button" onClick={closePreview}>关闭预览</button></div><div className="button-row" role="group" aria-label="预览尺寸"><button type="button" aria-pressed={viewport === 'desktop'} onClick={() => setViewport('desktop')}>桌面</button><button type="button" aria-pressed={viewport === 'mobile'} onClick={() => setViewport('mobile')}>手机 · 390px</button></div><p className="micro">隔离预览禁用脚本、同源权限、表单与网络连接。内容和菜单真实性仍需人工核对。</p><div className={`website-preview-frame ${viewport}`}><iframe srcDoc={preview.html} sandbox="allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerPolicy="no-referrer" title={`餐厅网页隔离预览：${restaurant.name}`} /></div>{preview.pdfs.length > 0 && <div className="button-row website-pdf-downloads">{preview.pdfs.map(pdf => <a key={pdf.id} href={pdf.url} download={`menu-${pdf.id}.pdf`} rel="noopener">下载此版本菜单 PDF</a>)}</div>}</section>}
+      {preview && <section className="website-preview" aria-labelledby={`${prefix}-preview-title`}><div className="row-heading"><h3 id={`${prefix}-preview-title`}>预览版本 {state?.versions.find(version => version.id === preview.versionId)?.version_number ?? '已生成'}</h3><button type="button" className="text-button" onClick={closePreview}>关闭预览</button></div><div className="button-row" role="group" aria-label="预览尺寸"><button type="button" aria-pressed={viewport === 'desktop'} onClick={() => setViewport('desktop')}>桌面</button><button type="button" aria-pressed={viewport === 'mobile'} onClick={() => setViewport('mobile')}>手机 · 390px</button></div><p className="micro">预览框内可滚动，网页里的菜单、联系方式等锚点可直接点击跳转；切换桌面／手机会重新从网页顶部显示。隔离预览仍禁用脚本、同源权限、表单与网络连接，内容与菜单真实性需人工核对。</p><div className="button-row website-preview-links"><a href={preview.fullUrl} target="_blank" rel="noopener noreferrer">在新窗口打开完整预览（原图与完整尺寸）</a></div>{preview.reducedImages > 0 && <p className="notice" role="status">有 {preview.reducedImages} 张图片因隔离预览文档大小限制以占位显示；请在新窗口预览或下载原图核对。</p>}{preview.originals.length > 0 && <div className="button-row website-pdf-downloads">{preview.originals.map(image => <a key={image.id} href={image.url} download={image.label} rel="noopener">下载 {image.label}</a>)}</div>}<div className={`website-preview-frame ${viewport}`}><iframe key={`${preview.versionId}-${viewport}`} src={preview.documentUrl} sandbox="allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerPolicy="no-referrer" title={`餐厅网页隔离预览：${restaurant.name}`} /></div>{preview.pdfs.length > 0 && <div className="button-row website-pdf-downloads">{preview.pdfs.map(pdf => <a key={pdf.id} href={pdf.url} download={`menu-${pdf.id}.pdf`} rel="noopener">下载此版本菜单 PDF</a>)}</div>}</section>}
     </section>
     <section className="website-section" aria-labelledby={`${prefix}-publication-title`}><h3 id={`${prefix}-publication-title`}>04 / 本地发布与回滚</h3>{publicationNeedsCheck && <p className="notice" role="status">原操作已处理，当前版本尚待核对。以下保留上次读取的状态，不代表原操作的版本仍是当前版本。</p>}{state?.publication.published_version_id ? <p className="micro">{publicationNeedsCheck || checking || !!loadError ? '上次读取的发布版本' : '当前发布版本'}：{publishedNumber ?? '不在最近版本列表'} · 发布修订 {state.publication.revision}</p> : <p className="micro">{publicationNeedsCheck || checking || !!loadError ? '尚待核对当前发布状态。' : '尚未本地发布。'}生成成功不等于发布成功。</p>}{publicUrl && <p className="website-public-url"><a href={publicUrl} target="_blank" rel="noopener noreferrer">打开已发布的本地网页</a><span className="micro">{publicUrl}</span></p>}{state?.publication.deployment_mode === 'unconfigured' && <p className="notice">本地发布服务未配置，发布与回滚已停用。</p>}<div className="field"><label htmlFor={`${prefix}-slug`}>本地网页路径（不是域名注册）</label><input id={`${prefix}-slug`} value={slug} minLength={3} maxLength={50} pattern={websiteSlugPattern.source} readOnly={!!state?.publication.slug} disabled={inputLocked} aria-describedby={`${prefix}-slug-help`} onChange={event => { setSlug(event.target.value); setPublicationConfirmed(false); setPublishTarget(null); }} /><p id={`${prefix}-slug-help`} className="micro">3–50 位；首尾必须为小写字母或数字，中间可含连字符；禁用 admin、api、auth、www。第一次发布后固定不变，不会注册二级域名或绑定公网域名。</p>{slug && !websiteSlugPattern.test(slug) && <p className="micro">路径格式不正确：首尾须为字母或数字，长度 3–50，且不能使用保留名称。</p>}</div><p className="micro">本次选择：{selected ? `版本 ${selected.version_number} · ${selected.summary}` : '请先选择一个真实版本'}{rollback ? ' · 将回滚到较早版本' : ''}</p><label className="check-field website-confirmation"><input type="checkbox" checked={publicationConfirmed} disabled={inputLocked || jobsActive} onChange={event => { setPublicationConfirmed(event.target.checked); setPublishTarget(null); }} /><span>我确认这一版可公开展示（本地网址）</span></label><div className="save-row"><button type="button" disabled={inputLocked || jobsActive || publicationNeedsCheck || checking || !!loadError || restaurantDirty || !['draft', 'active'].includes(restaurant.status) || !selected || state?.publication.deployment_mode !== 'local' || !publicationConfirmed || !websiteSlugPattern.test(slug) || selected.id === state.publication.published_version_id} onClick={() => setPublishTarget(selected)}>{rollback ? '回滚到此版本' : '发布此版本到本地'}</button></div>{publishTarget && <section className="notice confirmation"><h3>确认{rollback ? '回滚' : '本地发布'}版本 {publishTarget.version_number}？</h3><p>{publishTarget.summary}</p><p>将改变本地网址展示的版本；不会自动重放，也不会开放真实预订。其他网页版本与原始素材保留。</p><div className="button-row"><button type="button" disabled={inputLocked || jobsActive || !publicationConfirmed} onClick={publish}>确认{rollback ? '回滚到此版本' : '本地发布'}</button><button type="button" className="text-button" disabled={pending !== null} onClick={() => setPublishTarget(null)}>取消</button></div></section>}</section>
   </section>;

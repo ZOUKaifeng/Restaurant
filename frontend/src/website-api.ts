@@ -325,24 +325,10 @@ export const websiteApi = {
   }, { signal, expectedStatus: 200, accept: asset.mime_type }),
 };
 
-export function rewriteWebsitePreview(html: string, urls: ReadonlyMap<string, string>): string {
-  // 只改写完整 src/href 保留占位符，不替换文本、样式或任意 URL。
-  const rewritten = html.replace(/<[a-z][a-z0-9:-]*(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi, tag =>
-    tag.replace(/(\s)([a-z_:][a-z0-9_.:-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi,
-      (match, space: string, attribute: string, doubleQuoted: string | undefined, singleQuoted: string | undefined, unquoted: string | undefined) => {
-        if (!['src', 'href'].includes(attribute.toLowerCase())) return match;
-        const token = /^__SITE_ASSET_([A-Za-z0-9_-]{16,64})__$/.exec(doubleQuoted ?? singleQuoted ?? unquoted ?? '');
-        if (!token) return match;
-        const url = urls.get(token[1]);
-        if (!url || !url.startsWith('blob:') || /["'<>\s]/.test(url)) throw invalid();
-        return `${space}${attribute}="${url}"`;
-      }));
-  // 已知资源属性均在上面替换或报错；普通文本出现相同前缀不是素材错误。
-  if (!/<head(?:\s[^>]*)?>/i.test(rewritten)) throw invalid();
-  const csp = "default-src 'none'; img-src blob: data:; style-src 'unsafe-inline'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; script-src 'none'";
-  // 在服务端安全文档的 head 起始处加同等或更严格的约束，后续策略不能放宽。
-  return rewritten.replace(/<head(?:\s[^>]*)?>/i, match => `${match}<meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer">`);
-}
+export {
+  rewriteWebsitePreview, previewDocumentUrl, textDataUrl,
+  PREVIEW_DOCUMENT_LIMIT, PREVIEW_PLACEHOLDER_IMAGE,
+} from './website-preview';
 
 const errorMessages: Record<string, string> = {
   MENU_CONFIRM_REQUIRED: '请先在菜单识图中核对并确认菜单，再生成网页。',

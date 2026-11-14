@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>网页预览修复说明</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: #242820; font: 13px/1.9 system-ui, -apple-system, "PingFang SC", sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 76px 28px 120px; }
+  h1 { font-size: 20px; font-weight: 500; letter-spacing: .04em; margin: 0 0 6px; }
+  h2 { font-size: 13px; font-weight: 500; letter-spacing: .06em; margin: 0 0 12px; }
+  .meta { color: #7d8278; font-size: 12px; margin: 0 0 48px; }
+  section { border-top: 1px solid #e4e6e1; padding: 24px 0 30px; }
+  p { margin: 0 0 10px; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  li { position: relative; padding-left: 14px; margin: 0 0 8px; }
+  li::before { content: ""; position: absolute; left: 0; top: .82em; width: 3px; height: 3px; border-radius: 50%; background: #9aa397; }
+  code { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: #4a5147; }
+  .quiet { color: #7d8278; font-size: 12px; }
+  ol { margin: 0; padding-left: 18px; }
+  ol li { padding-left: 0; margin-bottom: 6px; }
+  ol li::before { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>网页预览修复</h1>
+  <p class="meta">2026-11-14 · 本机工程修复 · 界面验收仍由用户手动完成</p>
+
+  <section>
+    <h2>现象</h2>
+    <p>点击「预览此版本」能看到网页首屏，但点击网页里的菜单链接，或切换「手机版／桌面版」之后，内容显示不出来。</p>
+  </section>
+
+  <section>
+    <h2>原因</h2>
+    <ul>
+      <li>预览 iframe 原先使用 <code>srcDoc</code>，文档地址是 <code>about:srcdoc</code>，没有自己的 URL。网页里的 <code>href="#menu"</code> 被浏览器解析成父页面地址，在沙箱中拒绝加载，菜单锚点因此点了没有反应。</li>
+      <li>预览图片使用父页面创建的 <code>blob:</code> 地址；沙箱 iframe 是独立源，浏览器以「Not allowed to load local resource」拒绝，图片也显示不出来。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>修复</h2>
+    <ul>
+      <li>预览文档改为自包含的 <code>data:text/html</code> 地址，菜单、联系方式等锚点可以正常跳转滚动。</li>
+      <li>图片缩放后内嵌为 data URL；超出浏览器 data URL 大小预算时按体积降级为占位并提示，不让整个预览变空白。</li>
+      <li>新增「在新窗口打开完整预览」，可查看原图与完整尺寸；PDF 仍只在预览区下方下载。</li>
+      <li>切换桌面／手机时重建 iframe，从网页顶部重新显示，避免停在重排后的空白位置。</li>
+      <li>继续保留无同源权限的 sandbox 与 CSP：禁用脚本、表单、网络连接和任意外部资源。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>工程校验</h2>
+    <ul>
+      <li>新增 4 项 Playwright 回归：资源地址改写安全、大图降级、新窗口完整预览、沙箱内锚点与尺寸切换。</li>
+      <li>用真实 Chome 版本（27 道菜）验证：点击 Menu 后地址变为 <code>#menu</code>、滚动 1243px；切换手机后内容仍在且回到顶部；浏览器控制台无错误。</li>
+      <li>前端类型检查与构建通过；后端 166 项真实 PostgreSQL 回归全部通过，无跳过。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>手动验收</h2>
+    <ol>
+      <li>刷新 https://localhost:5173，选择餐厅 → 网页生成。</li>
+      <li>点击「预览此版本」。</li>
+      <li>点击预览网页里的 Menu，应滚动到菜单区。</li>
+      <li>切换「手机 · 390px」／「桌面」，应重新从网页顶部完整显示。</li>
+      <li>点「在新窗口打开完整预览」查看原图与完整尺寸。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>边界</h2>
+    <p class="quiet">这只是本机隔离预览，不等于公网发布。正式域名、云端托管与 HTTPS 尚未配置；顾客订位、订阅与访问统计仍未实现。</p>
+  </section>
+</main>
+</body>
+</html>
