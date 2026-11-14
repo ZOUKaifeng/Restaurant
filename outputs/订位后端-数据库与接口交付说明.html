@@ -51,7 +51,7 @@
 </ul>
 <h3>生成网页与站点订位页</h3>
 <ul>
-<li>生成器新增固定组件 <code>&lt;restaurant-reservation&gt;</code>：开启订位时渲染说明和“提交订位申请”入口；模型没写也会自动补；未开启显示联系提示。</li>
+<li>生成器新增固定组件 <code>&lt;restaurant-reservation&gt;</code>：模型提示词和能力契约要求在开启订位时必须显式写入且仅一次；开启时渲染说明和“提交订位申请”入口，漏写由服务端兜底补；未开启时后端不渲染该块，页面不出现“暂未开放”占位。</li>
 <li>入口指向平台固定页面 <code>/s/&lt;slug&gt;/reserve</code>，收集姓名、邮箱或电话、日期、时间、人数、备注，并要求确认隐私说明；生成网页本身仍不运行表单或脚本。</li>
 <li>提交同源到站点服务，复用与公开API相同的营业、时区、幂等和事务校验；成功页显示编号、pending状态和 <code>/r/&lt;token&gt;</code> 管理链接。</li>
 <li>管理页可查看状态并取消；取消只接受POST与revision，GET不会改变状态。站点页仅放宽 <code>form-action 'self'</code>，无脚本，生成网页的沙箱和禁表单不变。</li>

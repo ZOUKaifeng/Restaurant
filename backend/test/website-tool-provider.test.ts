@@ -31,9 +31,12 @@ test('缺少用量、截断工具JSON和402必须停止，不用0用量或自动
   assert.equal(calls, 3);
 });
 test('模型能力契约明示商家接口不是公开授权，顾客业务仍未实现', () => {
-  const contract = websiteAgentContract as { available_model_tools: string[]; backend_status: { unavailable_features: string[] }; publish_authority: string };
+  const contract = websiteAgentContract as { available_model_tools: string[]; backend_status: { unavailable_features: string[] }; publish_authority: string; components: Record<string, string> };
   assert.deepEqual(contract.available_model_tools, websiteAgentTools.map(tool => tool.function.name));
   assert.ok(contract.backend_status.unavailable_features.some(feature => feature.startsWith('Customer reservation')));
   assert.ok(contract.publish_authority.includes('Only merchant'));
+  // 订位入口必须由模型默认使用固定组件，而不是自由生成表单或接口调用。
+  assert.match(contract.components['restaurant-reservation'] ?? '', /reservation_enabled/);
+  assert.match(contract.components['restaurant-reservation'] ?? '', /<restaurant-reservation>/);
   for (const tool of websiteAgentTools) assert.equal(tool.function.parameters.additionalProperties, false);
 });

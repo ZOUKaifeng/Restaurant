@@ -25,15 +25,16 @@ test('CSS语法树阻断外网、导入、伪造content与浏览器绑定', () =
     assert.throws(() => renderWebsite({ ...output, css }, snapshot), { code: 'WEBSITE_HTML_INVALID' });
   }
 });
-test('订位组件使用平台固定入口，开启时自动补全，未开启显示联系提示', () => {
+test('订位组件使用平台固定入口，开启时自动补全，未开启不渲染任何订位提示', () => {
   const enabled = { ...snapshot, restaurant: { ...snapshot.restaurant, reservation_enabled: true, reservation_notice: 'Requests need restaurant confirmation.' } };
   const explicit = renderWebsite({ ...output, html_body: '<main><restaurant-reservation></restaurant-reservation></main>' }, enabled).html;
   assert.ok(explicit.includes('__SITE_RESERVE__') && explicit.includes('Requests need restaurant confirmation.'));
   const automatic = renderWebsite(output, enabled).html;
   assert.ok(automatic.includes('__SITE_RESERVE__') && automatic.includes('site-reservation-link'));
   const disabled = renderWebsite({ ...output, html_body: '<main><restaurant-reservation></restaurant-reservation></main>' }, snapshot).html;
-  assert.ok(disabled.includes('site-reservation-unavailable'));
   assert.ok(!disabled.includes('__SITE_RESERVE__'));
+  assert.ok(!/class="site-reservation/.test(disabled));
+  assert.ok(!disabled.includes('site-reservation-unavailable'));
 });
 test('素材仅限确认清单，图片与菜单占位符可替换但不带私有地址', () => {
   const aid = 'ast_' + 'a'.repeat(24), unknown = 'ast_' + 'b'.repeat(24);
