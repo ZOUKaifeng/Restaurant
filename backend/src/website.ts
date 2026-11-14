@@ -5,6 +5,7 @@ import { id, transaction } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import { lockAuthenticated, requireSession, requireWrite, type Session } from './security.js';
 import { createAssetStore } from './asset-storage.js';
+import { requireMenuIdle, readConfirmedMenu, readMenuDraft, menuItemCount } from './menu-access.js';
 import {
   localWebsiteOrigin, ownedWebsiteRestaurant, publicationView, readyWebsiteVersion, requireWebsiteAI,
   requireWebsiteRestaurant, websiteAudit, websiteFingerprint, websiteJobColumns, websiteSettings,
@@ -68,8 +69,11 @@ async function replayJob(db: PoolClient, rid: string, userId: string, kind: stri
 }
 async function quota(db: PoolClient, userId: string, rid: string, generate: boolean): Promise<void> {
   if ((await db.query(`SELECT id FROM website_jobs WHERE restaurant_id=$1 AND status IN ('queued','running') LIMIT 1`, [rid])).rowCount) throw new ApiError(409, 'WEBSITE_JOB_BUSY');
-  const daily = await db.query(`SELECT count(*)::int AS n FROM (SELECT id FROM website_jobs
-    WHERE requesting_user_id=$1 AND created_at>clock_timestamp()-interval '24 hours' LIMIT 30) jobs`, [userId]);
+  await requireMenuIdle(db, rid);
+  const daily = await db.query(`SELECT count(*)::int AS n FROM (
+    SELECT id FROM website_jobs WHERE requesting_user_id=$1 AND created_at>clock_timestamp()-interval '24 hours'
+    UNION ALL SELECT id FROM menu_jobs WHERE requesting_user_id=$1 AND created_at>clock_timestamp()-interval '24 hours'
+    LIMIT 30) jobs`, [userId]);
   if (daily.rows[0].n >= 30) throw new ApiError(429, 'WEBSITE_DAILY_LIMIT');
   if (generate) {
     const versions = await db.query('SELECT count(*)::int AS n FROM (SELECT id FROM website_versions WHERE restaurant_id=$1 LIMIT 20) versions', [rid]);
@@ -95,7 +99,8 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
           version_number: version.version_number, summary: version.summary, created_at: version.created_at.toISOString(),
           checksum: version.checksum, asset_ids: version.asset_ids })), jobs: jobs.rows.map(websiteJobView),
         publication: publicationView(config, publication), model: websiteSettings(config)?.model ?? 'deepseek-flash',
-        model_configured: Boolean(websiteSettings(config)?.apiKey?.trim()), menu_recognition_enabled: false } satisfies WebsiteState;
+        model_configured: Boolean(websiteSettings(config)?.apiKey?.trim()), menu_recognition_enabled: true,
+        menu: await (async () => { const draft = await readMenuDraft(db, rid); return { revision: draft?.revision ?? 0, status: draft?.status ?? 'empty', item_count: draft ? menuItemCount(draft.data) : 0 }; })() } satisfies WebsiteState;
     });
     return result;
   });
@@ -126,11 +131,12 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
   app.post(`${base}/generations`, async (request, reply) => {
     privateHeaders(reply);
     const session = (await requireWrite(pool, config, request))!, { rid } = params(request);
-    const value = body(request, ['brief', 'asset_ids', 'public_assets_confirmed', 'expected_restaurant_revision']);
+    const value = body(request, ['brief', 'asset_ids', 'public_assets_confirmed', 'expected_restaurant_revision'], ['expected_menu_revision']);
     if (value.public_assets_confirmed !== true) invalid('public_assets_confirmed', 'CONFIRMATION_REQUIRED');
     if (!Array.isArray(value.asset_ids) || value.asset_ids.length > 8 || value.asset_ids.some(aid => typeof aid !== 'string' || !/^ast_[A-Za-z0-9_-]{24}$/.test(aid)) || new Set(value.asset_ids).size !== value.asset_ids.length) invalid('asset_ids');
     const input = { brief: text(value.brief, 'brief', 3000), asset_ids: value.asset_ids as string[], public_assets_confirmed: true as const,
-      expected_restaurant_revision: revision(value.expected_restaurant_revision, 'expected_restaurant_revision') };
+      expected_restaurant_revision: revision(value.expected_restaurant_revision, 'expected_restaurant_revision'),
+      ...(Object.hasOwn(value, 'expected_menu_revision') ? { expected_menu_revision: revision(value.expected_menu_revision, 'expected_menu_revision') } : {}) };
     const key = idem(request), fingerprint = websiteFingerprint(input);
     const job = await locked(pool, config, session, rid, async (db, row) => {
       const existing = await replayJob(db, rid, session.user.id, 'generate', key, fingerprint);
@@ -138,7 +144,11 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
       requireWebsiteAI(config); requireWebsiteRestaurant(row);
       if (row.revision !== input.expected_restaurant_revision) throw new ApiError(412, 'RESTAURANT_REVISION_CONFLICT');
       await quota(db, session.user.id, rid, true);
+      const menuDraft = await readMenuDraft(db, rid);
+      if (input.expected_menu_revision !== undefined && input.expected_menu_revision !== (menuDraft?.revision ?? 0)) throw new ApiError(409, 'MENU_REVISION_CONFLICT');
+      const confirmedMenu = await readConfirmedMenu(db, rid);
       const snapshot = await websiteSnapshot(db, row, input.asset_ids, true);
+      snapshot.menu = confirmedMenu;
       await initialize(db, rid);
       const jid = id('wsj');
       const inserted = await db.query<WebsiteJobRecord>(`INSERT INTO website_jobs(id,restaurant_id,requesting_user_id,kind,idempotency_key,request_fingerprint,input,snapshot)

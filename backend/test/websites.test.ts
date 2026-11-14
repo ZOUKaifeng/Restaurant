@@ -18,7 +18,7 @@ import { readPublicWebsite, type WebsiteRuntimeConfig } from '../src/website-acc
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: WebsiteRuntimeConfig, root: string;
 let sequence = 0;
-const tables = 'website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 const password = '网页测试-Valid-Password-2026!';
 interface Actor { email: string; cookie: string; csrf: string }
 function testUrl(key: string, role: string): string {
@@ -172,7 +172,7 @@ test('真实 PostgreSQL 网页任务、生成、预览和本地发布闭环', as
     assert.deepEqual(initial.versions, []); assert.deepEqual(initial.jobs, []);
     assert.deepEqual(initial.publication, { revision: 0, published_version_id: null, slug: null, url: null, deployment_mode: 'local' });
     assert.equal(initial.model, 'deepseek-flash'); assert.equal(initial.model_configured, true);
-    assert.equal(initial.menu_recognition_enabled, false);
+    assert.equal(initial.menu_recognition_enabled, true);
     assert.equal((await owner.query('SELECT id FROM website_agents WHERE restaurant_id=$1', [rid])).rowCount, 0);
     assert.equal((await request('GET', path(rid))).statusCode, 401);
     assert.equal((await request('GET', path(rid), bob)).statusCode, 404);

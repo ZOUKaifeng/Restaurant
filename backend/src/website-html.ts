@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { parseFragment, type DefaultTreeAdapterMap } from 'parse5';
 import * as cssTree from 'css-tree';
 import { ApiError } from './errors.js';
+import { normalizeMenuData, type ConfirmedMenuSnapshot } from './menu-data.js';
 
 export interface WebsiteSnapshot {
+  menu?: ConfirmedMenuSnapshot | null;
   restaurant: { id: string; name: string; description: string | null; cuisine_type: string | null; address_line1: string | null; address_line2: string | null; city: string | null; region: string | null; postal_code: string | null; country_code: string | null; contact_email: string | null; contact_phone: string | null; timezone: string | null; currency: string | null; primary_locale: string };
   opening_hours: Array<{ weekday: number; opens_at_local: string; closes_at_local: string; closes_day_offset: number }>;
   assets: Array<{ id: string; kind: string; mime_type: string; checksum: string; width_px: number | null; height_px: number | null }>;
@@ -64,7 +66,14 @@ export function renderWebsite(output: { html_body: string; css: string; summary:
     }
     if (tag === 'restaurant-menu') {
       const menu = snapshot.assets.find(a => a.kind === 'menu_source');
-      return menu ? `<a class="site-menu-link" href="${assetPlaceholder(menu.id)}" download="${menu.mime_type === 'application/pdf' ? 'menu.pdf' : 'menu-image'}" target="_blank" rel="noopener noreferrer">${escapeHtml(generic('View menu file', '查看菜单原文件'))}</a>` : escapeHtml(generic('Please contact the restaurant for the menu.', '请联系餐厅获取菜单。'));
+      let structured = '';
+      if (snapshot.menu) {
+        const data = normalizeMenuData(snapshot.menu.data, true);
+        if (!Number.isSafeInteger(snapshot.menu.revision) || snapshot.menu.revision < 1) invalid();
+        structured = `<div class="site-menu" data-menu-revision="${snapshot.menu.revision}">${data.categories.map(category => `<section class="site-menu-category"><h3>${escapeHtml(category.name)}</h3><ul>${category.items.map(item => `<li class="site-menu-item"><div class="site-menu-item-heading"><strong>${escapeHtml(item.name)}</strong>${item.price_text !== null ? `<span class="site-menu-price">${escapeHtml(item.price_text)}</span>` : ''}</div>${item.description ? `<p class="site-menu-description">${escapeHtml(item.description)}</p>` : ''}</li>`).join('')}</ul></section>`).join('')}</div>`;
+      }
+      const file = menu ? `<a class="site-menu-link" href="${assetPlaceholder(menu.id)}" download="${menu.mime_type === 'application/pdf' ? 'menu.pdf' : 'menu-image'}" target="_blank" rel="noopener noreferrer">${escapeHtml(generic('View menu file', '查看菜单原文件'))}</a>` : '';
+      return structured + file || escapeHtml(generic('Please contact the restaurant for the menu.', '请联系餐厅获取菜单。'));
     }
     if (tag === 'restaurant-image') {
       const aid = attrs.get('data-asset-id');
@@ -111,7 +120,7 @@ export function renderWebsite(output: { html_body: string; css: string; summary:
   for (const aid of imageIds) if (!renderedImages.has(aid)) missing.push(`<div class="site-required-image">${component('restaurant-image', new Map([['data-asset-id', aid]]))}</div>`);
   if (missing.length) content += `<footer class="site-required">${missing.join('')}</footer>`;
   const css = safeCss(output.css);
-  const base = '*,*::before,*::after{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;color:#242820;background:#fff;font-family:system-ui,sans-serif}img{max-width:100%;height:auto}a:focus-visible{outline:2px solid currentColor;outline-offset:4px}.site-required{padding:32px;max-width:1100px;margin:auto}.site-hours{list-style:none;padding:0}.site-required-image img{max-height:520px;object-fit:cover}.site-service-note{padding:20px;text-align:center;font:12px system-ui;color:#585d54;border-top:1px solid #e4e6e1}';
+  const base = '*,*::before,*::after{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;color:#242820;background:#fff;font-family:system-ui,sans-serif}img{max-width:100%;height:auto}a:focus-visible{outline:2px solid currentColor;outline-offset:4px}.site-required{padding:32px;max-width:1100px;margin:auto}.site-menu-category ul{list-style:none;padding:0}.site-menu-item{padding:14px 0;border-bottom:1px solid #e4e6e1}.site-menu-item-heading{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.site-menu-price{white-space:pre-wrap}.site-menu-description{font-size:14px;line-height:1.7}.site-hours{list-style:none;padding:0}.site-required-image img{max-height:520px;object-fit:cover}.site-service-note{padding:20px;text-align:center;font:12px system-ui;color:#585d54;border-top:1px solid #e4e6e1}';
   const motion = '@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}';
   const note = generic('Online reservations are not available on this website. Please contact the restaurant directly.', '本网站尚未提供在线订位，请直接联系餐厅。');
   const html = `<!DOCTYPE html><html lang="${escapeHtml(r.primary_locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(WEBSITE_CSP)}"><meta name="referrer" content="no-referrer"><title>${escapeHtml(r.name)}</title><meta name="description" content="${escapeHtml((r.description ?? '').slice(0, 240))}"><style>${base}${css}${motion}</style></head><body>${content}<footer class="site-service-note">${escapeHtml(note)}</footer></body></html>`;

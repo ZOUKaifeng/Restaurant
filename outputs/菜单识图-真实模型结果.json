@@ -1,0 +1,46 @@
+{
+  "sample_is_synthetic": true,
+  "merchant_confirmed": false,
+  "model": "deepseek-flash",
+  "data": {
+    "categories": [
+      {
+        "name": "MAINS",
+        "items": [
+          {
+            "name": "Margherita Pizza",
+            "description": "Tomato, mozzarella, basil",
+            "price_text": "$12.50",
+            "review_note": null
+          },
+          {
+            "name": "Mushroom Pasta",
+            "description": "Mushrooms and cream sauce",
+            "price_text": "$15.00",
+            "review_note": null
+          }
+        ]
+      },
+      {
+        "name": "DRINKS",
+        "items": [
+          {
+            "name": "Lemonade",
+            "description": null,
+            "price_text": "$4.00",
+            "review_note": null
+          }
+        ]
+      }
+    ],
+    "warnings": [
+      "This is an unconfirmed merchant draft, not published or verified truth.",
+      "Page header reads \"SAMPLE MENU\"; contents may be placeholder data."
+    ]
+  },
+  "usage": {
+    "prompt_tokens": 820,
+    "completion_tokens": 147,
+    "total_tokens": 967
+  }
+}

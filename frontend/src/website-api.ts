@@ -81,19 +81,22 @@ function readState(value: unknown, restaurantId: string): WebsiteState {
   const data = record(value);
   const agent = record(data.agent);
   if (!Array.isArray(agent.messages) || !Array.isArray(data.versions) || !Array.isArray(data.jobs)
-    || typeof data.model_configured !== 'boolean' || data.menu_recognition_enabled !== false) throw invalid();
+    || typeof data.model_configured !== 'boolean' || data.menu_recognition_enabled !== true) throw invalid();
   const messages = agent.messages.map((value): WebsiteState['agent']['messages'][number] => {
     const message = record(value);
     if (message.role !== 'user' && message.role !== 'assistant') throw invalid();
     return { role: message.role, content: text(message.content) };
   });
+  const menu = record(data.menu);
+  if (!['empty', 'draft', 'confirmed'].includes(text(menu.status))) throw invalid();
+  const menuState = { revision: revision(menu.revision), status: menu.status as WebsiteState['menu']['status'], item_count: revision(menu.item_count) };
   const versions = data.versions.map((value) => readVersion(value, restaurantId));
   const jobs = data.jobs.map(readJob);
   if (new Set(versions.map(item => item.id)).size !== versions.length || new Set(jobs.map(item => item.id)).size !== jobs.length) throw invalid();
   return {
     agent: { id: nullableId(agent.id), revision: revision(agent.revision), messages, design_brief: text(agent.design_brief) },
     versions, jobs, publication: readPublication(data.publication), model: text(data.model),
-    model_configured: data.model_configured, menu_recognition_enabled: false,
+    model_configured: data.model_configured, menu_recognition_enabled: true, menu: menuState,
   };
 }
 function readAccepted(value: unknown): WebsiteAccepted {
@@ -231,6 +234,9 @@ export function rewriteWebsitePreview(html: string, urls: ReadonlyMap<string, st
 }
 
 const errorMessages: Record<string, string> = {
+  MENU_CONFIRM_REQUIRED: '请先在菜单识图中核对并确认菜单，再生成网页。',
+  MENU_REVISION_CONFLICT: '菜单版本已变化，请核查网页状态和当前菜单，重新确认后再生成。',
+  MENU_JOB_BUSY: '本店菜单图片正在识别，请等待结束后再生成网页。',
   AI_NOT_CONFIGURED: '网页 Agent 尚未配置，不能发送需求或生成网页。请联系服务维护人员。',
   AI_BALANCE_INSUFFICIENT: '模型服务余额不足，请联系服务维护人员处理并核对任务记录。',
   AI_UPSTREAM_UNAVAILABLE: '模型服务暂时不可用，请核对任务状态后再决定是否重新提交。',

@@ -38,7 +38,8 @@ export interface WebsiteState {
   publication: WebsitePublication;
   model: string;
   model_configured: boolean;
-  menu_recognition_enabled: false;
+  menu_recognition_enabled: true;
+  menu: { revision: number; status: 'empty' | 'draft' | 'confirmed'; item_count: number };
 }
 export interface WebsiteAccepted { job_id: string; status: WebsiteJobStatus }
 export interface WebsiteMessageInput { message: string; expected_revision: number }
@@ -47,6 +48,7 @@ export interface WebsiteGenerateInput {
   asset_ids: string[];
   public_assets_confirmed: true;
   expected_restaurant_revision: number;
+  expected_menu_revision?: number;
 }
 export interface WebsitePublishInput { version_id: string; slug?: string; expected_revision: number }
 export interface WebsitePreviewAsset { id: string; content_url: string; mime_type: AssetMime }

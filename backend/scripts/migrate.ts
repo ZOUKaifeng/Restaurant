@@ -8,7 +8,7 @@ import { validateDatabaseUrl } from '../src/config.js';
 export async function migrate(pool: Pool, appRole = process.env.APP_DB_ROLE ?? 'restaurant_app'): Promise<void> {
   if (!['restaurant_app', 'restaurant_test_app'].includes(appRole)) throw new Error('APP_DB_ROLE 不在本轮固定角色白名单');
   const directory = new URL(existsSync(new URL('../migrations', import.meta.url)) ? '../migrations/' : '../../migrations/', import.meta.url);
-  const migrations = ['001_merchant_core', '002_assets', '003_asset_upload_intents', '004_websites'].map(version => {
+  const migrations = ['001_merchant_core', '002_assets', '003_asset_upload_intents', '004_websites', '005_menu_vision'].map(version => {
     const sql = readFileSync(new URL(`${version}.sql`, directory), 'utf8');
     return { version, sql, checksum: createHash('sha256').update(sql).digest('hex') };
   });

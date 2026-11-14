@@ -4,6 +4,7 @@ import type { Config } from './config.js';
 import type { Database } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import type { WebsiteSnapshot } from './website-html.js';
+import { readMenuDraft, menuItemCount } from './menu-access.js';
 
 export interface WebsiteSettings {
   apiKey?: string; baseUrl: string; model: string; publicOrigin: string;
@@ -38,7 +39,8 @@ export interface WebsitePublication {
 }
 export interface WebsiteState {
   agent: WebsiteAgent; versions: WebsiteVersionView[]; jobs: WebsiteJobView[]; publication: WebsitePublication;
-  model: string; model_configured: boolean; menu_recognition_enabled: false;
+  model: string; model_configured: boolean; menu_recognition_enabled: true;
+  menu: { revision: number; status: 'empty' | 'draft' | 'confirmed'; item_count: number };
 }
 export function websiteJobView(row: WebsiteJobRecord): WebsiteJobView {
   return { id: row.id, kind: row.kind, status: row.status, error_code: row.error_code,
@@ -95,8 +97,10 @@ export async function websiteSnapshot(db: Database, row: WebsiteRestaurant, asse
     to_char(closes_at_local,'HH24:MI') AS closes_at_local,closes_day_offset FROM opening_hours
     WHERE restaurant_id=$1 ORDER BY weekday,sort_order,opens_at_local,id LIMIT 22`, [row.id]);
   if (hours.rows.length > 21) invalid('opening_hours', 'TOO_MANY_INTERVALS');
-  // 只映射商家保存的事实及所选素材元数据；不读取文件或推断图片、PDF 内容。
-  return { restaurant: { id: row.id, name: row.name, description: row.description, cuisine_type: row.cuisine_label,
+  // 只纳入人工确认的菜单，不读取图片或PDF、不把未确认草稿变成事实。
+  const draft = await readMenuDraft(db, row.id);
+  const menu = draft?.status === 'confirmed' && menuItemCount(draft.data) > 0 ? { revision: draft.revision, data: draft.data } : null;
+  return { menu, restaurant: { id: row.id, name: row.name, description: row.description, cuisine_type: row.cuisine_label,
     address_line1: row.address_line1, address_line2: row.address_line2, city: row.city, region: row.region,
     postal_code: row.postal_code, country_code: row.country_code, contact_email: row.contact_email,
     contact_phone: row.phone, timezone: row.timezone, currency: row.currency_code, primary_locale: row.primary_locale },

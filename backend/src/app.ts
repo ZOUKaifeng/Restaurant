@@ -10,6 +10,7 @@ import { registerAuth } from './auth.js';
 import { registerRestaurants } from './restaurant.js';
 import { registerAssets } from './assets.js';
 import { registerWebsites } from './website.js';
+import { registerMenus } from './menu.js';
 
 export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   const app = Fastify({
@@ -52,7 +53,7 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   app.get('/api/v1/health/ready', async () => ({
     status: 'ready', database: 'postgresql', email_mode: config.emailMode,
     scope: 'merchant-core-assets-websites', storage_mode: config.storageMode,
-    website_model: config.website?.model ?? 'deepseek-flash', website_model_configured: Boolean(config.website?.apiKey), menu_recognition_enabled: false,
+    website_model: config.website?.model ?? 'deepseek-flash', website_model_configured: Boolean(config.website?.apiKey), menu_recognition_enabled: true,
     production_acceptance_complete: false,
   }));
   app.register(async routes => {
@@ -60,6 +61,7 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
     registerRestaurants(routes, pool, config);
     registerAssets(routes, pool, config);
     registerWebsites(routes, pool, config);
+    registerMenus(routes, pool, config);
   });
   return app;
 }
