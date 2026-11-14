@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiError } from './api';
+import AssetsPanel from './AssetsPanel';
 import { profileFields, profilePatch, toProfileDraft } from './profile';
 import type { ProfileDraft } from './profile';
 import type { OpeningHoursView, OpeningInterval, Restaurant, Versioned } from './types';
@@ -63,7 +64,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [rows, setRows] = useState<HourRow[]>([]);
-  const [tab, setTab] = useState<'profile' | 'hours'>('profile');
+  const [tab, setTab] = useState<'profile' | 'hours' | 'assets'>('profile');
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [syncError, setSyncError] = useState<unknown>(null);
@@ -189,7 +190,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
       <button type="button" className="text-button" disabled={busy} onClick={() => { action.clear(); setConfirmRefresh(true); }}>刷新资料</button>
     </header>
     <div className="readiness">
-      <p>仅资料检查，菜单/发布未实现。</p>
+      <p>仅资料检查。菜单与图片可保存原始素材，菜单编辑与发布未实现。</p>
       <p className="micro">{restaurant.readiness.missing_fields.length ? `待补充：${restaurant.readiness.missing_fields.map((field) => fieldLabels[field] ?? '其他资料').join('、')}` : '服务端检查暂无资料缺项；不代表可以发布。'}</p>
     </div>
     {!editable && <p className="notice">当前餐厅状态不可编辑。系统状态与归属不由此页面修改。</p>}
@@ -204,7 +205,9 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
     <div className="tab-nav" role="group" aria-label="资料分类">
       <button type="button" className={tab === 'profile' ? 'selected' : ''} aria-pressed={tab === 'profile'} disabled={busy} onClick={() => setTab('profile')}>餐厅资料{profileDirty ? ' · 未保存' : ''}</button>
       <button type="button" className={tab === 'hours' ? 'selected' : ''} aria-pressed={tab === 'hours'} disabled={busy} onClick={() => setTab('hours')}>周营业时间{hoursDirty ? ' · 未保存' : ''}</button>
+      <button type="button" className={tab === 'assets' ? 'selected' : ''} aria-pressed={tab === 'assets'} disabled={busy} onClick={() => setTab('assets')}>菜单与图片</button>
     </div>
+    <div hidden={tab !== 'assets'}><AssetsPanel key={id} restaurantId={id} busy={busy} onBusyChange={onBusyChange} /></div>
     {tab === 'profile' ? <form onSubmit={saveProfile} aria-busy={action.pending}>
       <p className="micro">名称与主要语言必填。其余字段可留空；清空已填写内容将以 null 保存。只提交发生变化的固定字段。</p>
       <fieldset disabled={disabled}>
@@ -226,7 +229,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
         {hoursDirty && <p className="notice">营业时间还有未保存内容，请先保存或放弃营业时间，再保存资料。</p>}
         <div className="save-row"><button type="submit" className="primary-button" disabled={!profileDirty || hoursDirty}>保存餐厅资料</button><button type="button" className="text-button" disabled={!profileDirty} onClick={() => setDraft(toProfileDraft(restaurant))}>放弃资料修改</button><span className="micro">{profileDirty ? '有未保存修改' : '资料与已读取版本一致'}</span></div>
       </fieldset>
-    </form> : <form onSubmit={saveHours} aria-busy={action.pending}>
+    </form> : tab === 'hours' ? <form onSubmit={saveHours} aria-busy={action.pending}>
       <p className="muted">按餐厅时区填写，每日可有多段。未配置的日期视为休息；保存会整体替换数组，最多 21 段。</p>
       <p className="micro">时区：{snapshot.hours.data.timezone ?? '尚未设置'}。单段大于 0 且不超过 24 小时，可跨至次日，不可重叠。</p>
       {!restaurant.timezone && <p className="notice">请先在餐厅资料中填写并保存有效时区，再保存营业时间。</p>}
@@ -249,6 +252,6 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
         {profileDirty && <p className="notice">餐厅资料还有未保存内容，请先保存或放弃资料，再保存营业时间。</p>}
         <div className="save-row"><button type="submit" className="primary-button" disabled={!hoursDirty || profileDirty || !restaurant.timezone || problems.length > 0}>保存周营业时间</button><button type="button" className="text-button" disabled={!hoursDirty} onClick={() => setRows(toHourRows(snapshot.hours.data.intervals))}>放弃营业修改</button></div>
       </fieldset>
-    </form>}
+    </form> : null}
   </section>;
 }

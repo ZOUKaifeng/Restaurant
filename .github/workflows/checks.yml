@@ -33,7 +33,7 @@ jobs:
       APP_ORIGIN: https://localhost:5173
       TOKEN_PEPPER: ci-only-pepper-not-for-real-accounts-2026
       CURSOR_SECRET: ci-only-cursor-not-for-real-accounts-2026
-      OUTBOX_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000001
+      OUTBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
       EMAIL_MODE: disabled
     steps:
       - uses: actions/checkout@v4

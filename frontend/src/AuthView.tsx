@@ -99,7 +99,7 @@ export default function AuthView(props: Props) {
       <p className="eyebrow">账户 / {isRegister ? '注册' : isReset ? '重置' : isVerify ? '验证' : isEmailOnly ? '邮件申请' : '登录'}</p>
       <h1 tabIndex={-1}>{heading.title}</h1>
       <p className="muted intro-copy">{heading.text}</p>
-      <p className="micro intro-footnote">仅处理账户与餐厅草稿。<br />菜单、发布和预约尚未实现。</p>
+      <p className="micro intro-footnote">管理账户、餐厅草稿与菜单图片素材。<br />菜单素材不做 AI 处理；发布和预约尚未实现。</p>
     </div>
     <div className="form-column">
       {isRegister && <>

@@ -1,3 +1,7 @@
+import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 export interface Config {
   nodeEnv: 'development' | 'test' | 'production';
   databaseUrl: string;
@@ -8,6 +12,9 @@ export interface Config {
   tokenPepper: string;
   cursorSecret: string;
   outboxEncryptionKey: string;
+  storageMode: 'local' | 's3';
+  storageLocalRoot: string;
+  s3?: { region: string; bucket: string; endpoint?: string; forcePathStyle: boolean };
   emailMode: 'disabled' | 'smtp';
   smtp?: { host: string; port: number; secure: boolean; user: string; pass: string; from: string };
 }
@@ -46,7 +53,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     smtp = { host: required('SMTP_HOST'), port: number('SMTP_PORT', 465), secure: secure === 'true', user: required('SMTP_USER'), pass: required('SMTP_PASS'), from: required('SMTP_FROM') };
     if (/[\r\n]/.test(smtp.from) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(smtp.from)) throw new Error('无效配置 SMTP_FROM');
   }
-  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, emailMode: emailMode as Config['emailMode'], smtp };
+  const storageMode = env.STORAGE_MODE ?? (nodeEnv === 'production' ? 's3' : 'local');
+  if (!['local', 's3'].includes(storageMode) || (nodeEnv === 'production' && storageMode !== 's3')) throw new Error('生产素材必须配置 S3，不能回退本地存储');
+  const backendRoot = fileURLToPath(new URL(existsSync(new URL('../contracts', import.meta.url)) ? '../' : '../../', import.meta.url));
+  const storageLocalRoot = resolve(backendRoot, env.STORAGE_LOCAL_ROOT ?? '../.workbuddy/runtime/assets');
+  let s3: Config['s3'];
+  if (storageMode === 's3' || env.S3_BUCKET) {
+    const region = required('S3_REGION'), bucket = required('S3_BUCKET');
+    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) || !/^[a-z0-9-]{3,64}$/.test(region)) throw new Error('无效 S3 配置');
+    const endpoint = env.S3_ENDPOINT;
+    if (endpoint) {
+      const address = new URL(endpoint);
+      const localDevelopment = nodeEnv !== 'production' && address.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(address.hostname);
+      if ((address.protocol !== 'https:' && !localDevelopment) || address.username || address.password || address.search || address.hash) throw new Error('无效 S3 endpoint');
+    }
+    const pathStyle = env.S3_FORCE_PATH_STYLE ?? 'false';
+    if (!['true', 'false'].includes(pathStyle)) throw new Error('无效 S3_FORCE_PATH_STYLE');
+    s3 = { region, bucket, endpoint, forcePathStyle: pathStyle === 'true' };
+  }
+  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, emailMode: emailMode as Config['emailMode'], smtp };
 }
 
 export function validateDatabaseUrl(value: string): void {

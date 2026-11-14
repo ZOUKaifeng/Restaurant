@@ -31,6 +31,14 @@ export function onSessionExpired(listener: () => void) {
 }
 
 export function clearCsrf() { csrfToken = null; }
+export function getCsrfToken(): string {
+  if (!csrfToken) throw new ApiError(403, 'CSRF_REQUIRED');
+  return csrfToken;
+}
+export function notifySessionExpired(): void {
+  clearCsrf();
+  expiredListeners.forEach(listener => listener());
+}
 
 type RequestOptions = {
   method?: 'GET' | 'POST' | 'PATCH' | 'PUT';

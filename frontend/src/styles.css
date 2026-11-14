@@ -113,7 +113,7 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .workspace-header .micro { margin-top: 12px; }
 .workspace-header > button { white-space: nowrap; }
 .readiness { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 19px 0; margin: 26px 0; font-size: 12px; }
-.tab-nav { display: flex; gap: 30px; border-bottom: 1px solid var(--line); margin: 26px 0 30px; }
+.tab-nav { display: flex; flex-wrap: wrap; gap: 0 30px; border-bottom: 1px solid var(--line); margin: 26px 0 30px; }
 .tab-nav button { border: 0; border-radius: 0; padding: 11px 0; margin-bottom: -1px; color: var(--muted); }
 .tab-nav button.selected { color: var(--accent); border-bottom: 1px solid var(--accent); }
 .profile-group { padding-top: 30px; }
@@ -132,6 +132,33 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .workspace form > .muted { font-size: 12px; }
 .workspace form > .micro { margin-top: 12px; }
 .workspace form > fieldset > .micro { margin-top: 13px; }
+.assets-panel { min-width: 0; }
+.assets-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.assets-heading .micro { margin-top: 8px; }
+.assets-heading > button { flex-shrink: 0; }
+.assets-storage { padding: 14px 0; margin-top: 12px; border-bottom: 1px solid var(--line); }
+.asset-upload { padding: 24px 0; }
+.asset-upload .field { margin-bottom: 15px; }
+.asset-upload input[type="file"] { min-width: 0; overflow: hidden; font-size: 12px; }
+.asset-upload input[type="file"]::file-selector-button { border: 1px solid var(--line); border-radius: 2px; padding: 5px 9px; margin-right: 12px; background: #f8faf9; color: var(--accent); font: inherit; cursor: pointer; }
+.asset-upload input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
+.asset-selection { overflow-wrap: anywhere; margin-bottom: 18px; }
+.asset-abandon { border-top: 1px solid var(--line); margin-top: 15px; padding-top: 15px; }
+.asset-list { list-style: none; margin: 20px 0 0; padding: 0; }
+.asset-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; border-top: 1px solid var(--line); padding: 22px 0; }
+.asset-row-content { flex: 1; min-width: 0; }
+.asset-filename { overflow-wrap: anywhere; unicode-bidi: plaintext; }
+.asset-meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 10px 0 0; color: var(--muted); font-size: 11px; }
+.asset-meta > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.asset-meta dt, .asset-meta dd { margin: 0; }
+.asset-row-actions { flex-shrink: 0; max-width: 100%; }
+.asset-row-actions .button-row { gap: 14px; }
+.asset-row-actions .micro { margin-top: 6px; }
+.asset-list-footer { border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px; padding-top: 20px; }
+.asset-preview { margin: 24px 0; padding: 20px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.asset-preview .row-heading { gap: 18px; }
+.asset-preview .row-heading > button { flex-shrink: 0; }
+.asset-preview img { display: block; max-width: 100%; max-height: 480px; height: auto; margin: 0 auto; object-fit: contain; }
 @media (max-width: 1050px) {
   .account-email { max-width: 170px; }
   .dashboard-grid { grid-template-columns: 185px minmax(0, 1fr); gap: 30px; }
@@ -157,13 +184,17 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   .site-footer { flex-direction: column; gap: 7px; }
   input:not([type="checkbox"]), textarea, select { font-size: 16px; min-height: 44px; }
   .hours-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .asset-row { flex-direction: column; gap: 12px; }
+  .asset-row-actions { width: 100%; }
+  .asset-meta { flex-direction: column; gap: 5px; }
+  .asset-upload input[type="file"] { font-size: 16px; }
 }
 @media (max-width: 440px) {
   .form-grid { grid-template-columns: 1fr; }
   .form-grid .wide { grid-column: auto; }
   .header-nav { font-size: 11px; gap: 16px; }
   .save-row { gap: 15px; }
-  .tab-nav { gap: 22px; }
+  .tab-nav { gap: 0 18px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
