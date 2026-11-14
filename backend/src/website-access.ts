@@ -71,7 +71,8 @@ export interface WebsiteRestaurant {
   name: string; description: string | null; cuisine_label: string | null; address_line1: string | null;
   address_line2: string | null; city: string | null; region: string | null; postal_code: string | null;
   country_code: string | null; contact_email: string | null; phone: string | null; timezone: string | null;
-  currency_code: string | null; primary_locale: string;
+  currency_code: string | null; primary_locale: string; reservation_enabled: boolean;
+  reservation_notice: string | null; privacy_notice_version: string | null;
 }
 export const websiteJobColumns = 'id,kind,status,error_code,result_version_id,created_at,progress,trace';
 export const websiteVersionColumns = 'id,restaurant_id,version_number,summary,created_at,checksum,asset_ids';
@@ -123,7 +124,8 @@ export async function websiteSnapshot(db: Database, row: WebsiteRestaurant, asse
   return { menu, restaurant: { id: row.id, name: row.name, description: row.description, cuisine_type: row.cuisine_label,
     address_line1: row.address_line1, address_line2: row.address_line2, city: row.city, region: row.region,
     postal_code: row.postal_code, country_code: row.country_code, contact_email: row.contact_email,
-    contact_phone: row.phone, timezone: row.timezone, currency: row.currency_code, primary_locale: row.primary_locale },
+    contact_phone: row.phone, timezone: row.timezone, currency: row.currency_code, primary_locale: row.primary_locale,
+    reservation_enabled: row.reservation_enabled, reservation_notice: row.reservation_notice },
     opening_hours: hours.rows, assets: assets.rows.map(({ status: _status, ...asset }) => asset) };
 }
 export function websiteFingerprint(input: unknown): string {
@@ -156,6 +158,7 @@ export async function websiteAudit(db: PoolClient, userId: string, rid: string, 
 
 // 公共服务只按当前指针读取；状态或归属撤销后立即失效。素材下载须再以 slug、version_id、asset_id 查询此清单。
 export const WEBSITE_PUBLIC_READ_QUERY = `SELECT p.restaurant_id,p.slug,p.revision,v.id AS version_id,v.html,v.checksum,v.snapshot,v.asset_ids,
+  r.name AS restaurant_name,r.timezone,r.reservation_enabled,r.reservation_notice,r.privacy_notice_version,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',a.id,'mime_type',a.mime_type,'checksum',a.checksum,
     'size_bytes',a.size_bytes,'storage_backend',a.storage_backend,'storage_key',a.storage_key) ORDER BY a.id)
     FROM assets a WHERE a.restaurant_id=v.restaurant_id AND a.id=ANY(v.asset_ids) AND a.status='ready'),'[]'::jsonb) AS assets
@@ -171,6 +174,8 @@ export const WEBSITE_PUBLIC_READ_QUERY = `SELECT p.restaurant_id,p.slug,p.revisi
 export interface PublicWebsite {
   restaurant_id: string; slug: string; revision: number; version_id: string; html: string; checksum: string;
   snapshot: WebsiteSnapshot; asset_ids: string[];
+  restaurant_name: string; timezone: string | null; reservation_enabled: boolean;
+  reservation_notice: string | null; privacy_notice_version: string | null;
   assets: Array<{ id: string; mime_type: string; checksum: string; size_bytes: number; storage_backend: 'local' | 's3'; storage_key: string }>;
 }
 export async function readPublicWebsite(db: Database, slug: string): Promise<PublicWebsite | null> {

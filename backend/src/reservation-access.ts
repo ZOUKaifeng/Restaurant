@@ -281,3 +281,24 @@ export async function createReservation(pool: Pool, config: Config, site: Public
     return { reservation: inserted, token, replay: false };
   });
 }
+
+export async function cancelGuestReservation(pool: Pool, config: Config, token: string, expected: number,
+  requestId: string, reason: string | null = null): Promise<ReservationRecord> {
+  return transaction(pool, async db => {
+    const row = await readReservationByToken(db, config, token, true);
+    if (row.status === 'cancelled') return row;
+    if (row.status !== 'pending' && row.status !== 'confirmed') throw new ApiError(409, 'RESERVATION_FINAL');
+    if (row.revision !== expected) throw new ApiError(409, 'RESERVATION_REVISION_CONFLICT');
+    const next = (await db.query<ReservationRecord>(`UPDATE reservations SET status='cancelled',
+      cancelled_at=clock_timestamp(),cancelled_by_type='guest',revision=revision+1,updated_at=clock_timestamp()
+      WHERE restaurant_id=$1 AND id=$2 AND revision=$3 RETURNING ${reservationColumns.replaceAll('r.', '')}`,
+    [row.restaurant_id, row.id, expected])).rows[0];
+    if (!next) throw new ApiError(409, 'RESERVATION_REVISION_CONFLICT');
+    await insertEvent(db, { restaurantId: row.restaurant_id, reservationId: row.id, eventType: 'cancelled',
+      actorType: 'guest', actorUserId: null, fromStatus: row.status, toStatus: 'cancelled', revision: next.revision,
+      requestId, fingerprint: cancelFingerprint(expected, reason), changes: reason ? { reason } : {} });
+    const restaurant = await restaurantName(db, row.restaurant_id);
+    await queueReservationMail(db, config, next, 'reservation_cancelled', null, restaurant.name);
+    return next;
+  });
+}

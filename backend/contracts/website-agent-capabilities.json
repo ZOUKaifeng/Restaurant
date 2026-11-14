@@ -32,7 +32,8 @@
       {"path": "/api/v1/restaurants/:restaurantId", "purpose": "Read/update own restaurant facts and opening-hours. Model receives read-only snapshot; cannot mutate."},
       {"path": "/api/v1/restaurants/:restaurantId/assets", "purpose": "Authorized uploads/list/detail/content/delete. Model receives selected metadata; server maps assets."},
       {"path": "/api/v1/restaurants/:restaurantId/menu", "purpose": "Visual recognition draft/edit/manual confirm. Only already confirmed public fields are provided in read_context."},
-      {"path": "/api/v1/restaurants/:restaurantId/website", "purpose": "Job queue/state/version preview and explicit merchant publish/rollback. Managed by platform, not direct model calls."}
+      {"path": "/api/v1/restaurants/:restaurantId/website", "purpose": "Job queue/state/version preview and explicit merchant publish/rollback. Managed by platform, not direct model calls."},
+      {"path": "/api/v1/restaurants/:restaurantId/reservations", "purpose": "Merchant reservation settings/list/detail/confirm/decline/cancel. Platform UI only; never callable by the model."}
     ],
     "implemented_public_routes": [
       {"path": "/s/:slug", "purpose": "Current published static local website, no merchant login required."},

@@ -40,7 +40,9 @@ export function rewriteWebsitePreview(html: string, urls: ReadonlyMap<string, st
   if (!/<head(?:\s[^>]*)?>/i.test(rewritten)) throw invalid();
   const csp = "default-src 'none'; img-src blob: data:; style-src 'unsafe-inline'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; script-src 'none'";
   // 在服务端安全文档的 head 起始处加同等或更严格的约束，后续策略不能放宽。
-  return rewritten.replace(/<head(?:\s[^>]*)?>/i, match => `${match}<meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer">`);
+  // 订位入口由站点服务在发布时替换；隔离预览没有真实订位页，避免跳到不存在的相对地址。
+  return rewritten.replace(/<head(?:\s[^>]*)?>/i, match => `${match}<meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer">`)
+    .replaceAll('__SITE_RESERVE__', '#');
 }
 
 export function previewDocumentUrl(html: string): string {

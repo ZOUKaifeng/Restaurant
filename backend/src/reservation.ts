@@ -6,8 +6,8 @@ import { id, transaction } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import { equal, lockAuthenticated, normalizeEmail, requireSession, requireWrite, type Session } from './security.js';
 import {
-  cancelFingerprint, createReservation, decisionFingerprint, insertEvent, lockOwnedRestaurant, merchantView,
-  publicView, readPublicSite, readReservation, readReservationByToken, readSettings, requireReservationConfigured,
+  cancelFingerprint, cancelGuestReservation, createReservation, decisionFingerprint, insertEvent, lockOwnedRestaurant,
+  merchantView, publicView, readPublicSite, readReservation, readReservationByToken, readSettings, requireReservationConfigured,
   requireSettingsRevision, reservationAudit, reservationColumns, restaurantName, queueReservationMail,
   type CreateReservationInput, type PublicSite, type ReservationRecord,
 } from './reservation-access.js';
@@ -166,23 +166,7 @@ export function registerReservations(app: FastifyInstance, pool: Pool, config: C
       const value = body(request, ['expected_revision'], ['reason']);
       const expected = revision(value.expected_revision as number);
       const reason = text(value.reason, 'reason', 500, false);
-      const updated = await transaction(pool, async db => {
-        const row = await readReservationByToken(db, config, token, true);
-        if (row.status === 'cancelled') return row;
-        if (row.status !== 'pending' && row.status !== 'confirmed') throw new ApiError(409, 'RESERVATION_FINAL');
-        if (row.revision !== expected) throw new ApiError(409, 'RESERVATION_REVISION_CONFLICT');
-        const next = (await db.query<ReservationRecord>(`UPDATE reservations SET status='cancelled',
-          cancelled_at=clock_timestamp(),cancelled_by_type='guest',revision=revision+1,updated_at=clock_timestamp()
-          WHERE restaurant_id=$1 AND id=$2 AND revision=$3 RETURNING ${reservationColumns.replaceAll('r.', '')}`,
-        [row.restaurant_id, row.id, expected])).rows[0];
-        if (!next) throw new ApiError(409, 'RESERVATION_REVISION_CONFLICT');
-        await insertEvent(db, { restaurantId: row.restaurant_id, reservationId: row.id, eventType: 'cancelled',
-          actorType: 'guest', actorUserId: null, fromStatus: row.status, toStatus: 'cancelled', revision: next.revision,
-          requestId: request.id, fingerprint: cancelFingerprint(expected, reason), changes: reason ? { reason } : {} });
-        const restaurant = await restaurantName(db, row.restaurant_id);
-        await queueReservationMail(db, config, next, 'reservation_cancelled', null, restaurant.name);
-        return next;
-      });
+      const updated = await cancelGuestReservation(pool, config, token, expected, request.id, reason);
       const restaurant = await restaurantName(pool, updated.restaurant_id);
       return { reservation: publicView(updated, restaurant.name, restaurant.timezone ?? updated.timezone_snapshot) };
     });

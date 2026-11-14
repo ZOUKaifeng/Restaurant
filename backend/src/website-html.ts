@@ -7,7 +7,8 @@ import { normalizeMenuData, type ConfirmedMenuSnapshot } from './menu-data.js';
 
 export interface WebsiteSnapshot {
   menu?: ConfirmedMenuSnapshot | null;
-  restaurant: { id: string; name: string; description: string | null; cuisine_type: string | null; address_line1: string | null; address_line2: string | null; city: string | null; region: string | null; postal_code: string | null; country_code: string | null; contact_email: string | null; contact_phone: string | null; timezone: string | null; currency: string | null; primary_locale: string };
+  restaurant: { id: string; name: string; description: string | null; cuisine_type: string | null; address_line1: string | null; address_line2: string | null; city: string | null; region: string | null; postal_code: string | null; country_code: string | null; contact_email: string | null; contact_phone: string | null; timezone: string | null; currency: string | null; primary_locale: string;
+    reservation_enabled?: boolean; reservation_notice?: string | null };
   opening_hours: Array<{ weekday: number; opens_at_local: string; closes_at_local: string; closes_day_offset: number }>;
   assets: Array<{ id: string; kind: string; mime_type: string; checksum: string; width_px: number | null; height_px: number | null }>;
 }
@@ -22,7 +23,7 @@ export function assetPlaceholder(id: string): string {
 }
 const forbiddenTags = new Set('script iframe frame frameset object embed applet portal fencedframe form input textarea select option optgroup keygen link base meta style svg math audio video source track template noscript xmp plaintext noembed noframes title'.split(' '));
 const voidTags = new Set('area base br col embed hr img input link meta param source track wbr'.split(' '));
-const tokenTags = new Set(['restaurant-name', 'restaurant-description', 'restaurant-cuisine', 'restaurant-address', 'restaurant-contact', 'restaurant-hours', 'restaurant-menu', 'restaurant-image']);
+const tokenTags = new Set(['restaurant-name', 'restaurant-description', 'restaurant-cuisine', 'restaurant-address', 'restaurant-contact', 'restaurant-hours', 'restaurant-menu', 'restaurant-image', 'restaurant-reservation']);
 const customTag = /^[a-z][a-z0-9._-]*-[a-z0-9._-]*$/;
 const messages = {
   HTML_SYNTAX_ERROR: 'HTML 语法错误，请检查属性引号、实体和标签格式。',
@@ -408,7 +409,7 @@ export function renderWebsite(output: WebsiteOutput, snapshot: WebsiteSnapshot):
   if (!inspection.valid || !inspection.rendered) throw new WebsiteValidationError(inspection.diagnostics);
   return inspection.rendered;
 }
-const blockComponents = new Set(['restaurant-menu', 'restaurant-hours', 'restaurant-image']);
+const blockComponents = new Set(['restaurant-menu', 'restaurant-hours', 'restaurant-image', 'restaurant-reservation']);
 const inlineParents = new Set('p h1 h2 h3 h4 h5 h6 span a abbr b bdi bdo cite code data dfn em i kbd mark q rp rt ruby s samp small strong sub sup time u var button pre summary legend picture label output progress meter'.split(' '));
 function compileWebsite(fragment: DefaultTreeAdapterMap['documentFragment'], css: string, snapshot: WebsiteSnapshot, styles: Map<string, string>, report: Report, htmlReport: Report, origins: ElementOrigins): RenderedWebsite {
   const invalid = (code: DiagnosticCode = 'SNAPSHOT_INVALID'): never => { throw new WebsiteValidationError([{ file: code === 'SNAPSHOT_INVALID' ? 'assets' : 'index.html', line: 1, column: 1, code, message: messages[code] }]); };
@@ -453,6 +454,14 @@ function compileWebsite(fragment: DefaultTreeAdapterMap['documentFragment'], css
       renderedImages.add(aid);
       const asset = snapshot.assets.find(a => a.id === aid)!;
       return `<img src="${assetPlaceholder(aid)}" alt="${escapeHtml(r.name)}" width="${asset.width_px ?? 1}" height="${asset.height_px ?? 1}" loading="lazy" decoding="async">`;
+    }
+    if (tag === 'restaurant-reservation') {
+      if (!r.reservation_enabled) return `<p class="site-reservation-unavailable">${escapeHtml(generic('Online reservations are currently unavailable. Please contact the restaurant directly.', '在线订位暂未开放，请直接联系餐厅。'))}</p>`;
+      const notice = r.reservation_notice
+        ? escapeHtml(r.reservation_notice)
+        : escapeHtml(generic('Requests need restaurant confirmation. Submitting does not guarantee a table.',
+          '提交的是订位申请，需餐厅确认；提交不代表已订位。'));
+      return `<section class="site-reservation"><h2>${escapeHtml(generic('Reserve a table', '在线订位'))}</h2><p class="site-reservation-notice">${notice}</p><a class="site-reservation-link" href="__SITE_RESERVE__">${escapeHtml(generic('Request a table', '提交订位申请'))}</a></section>`;
     }
     return '';
   };
@@ -500,13 +509,17 @@ function compileWebsite(fragment: DefaultTreeAdapterMap['documentFragment'], css
     if (!seen.has(tag)) missing.push(`<div class="site-required-fact">${component(tag, new Map())}</div>`);
   }
   for (const aid of imageIds) if (!renderedImages.has(aid)) missing.push(`<div class="site-required-image">${component('restaurant-image', new Map([['data-asset-id', aid]]))}</div>`);
+  // 已开启订位的餐厅即使模型没写组件，也在页面补一个真实入口，避免网站没有订位方式。
+  if (r.reservation_enabled && !seen.has('restaurant-reservation')) missing.push(`<div class="site-required-fact">${component('restaurant-reservation', new Map())}</div>`);
   if (missing.length) {
     report('WARNING_FACT_FALLBACK');
     append(`<footer class="site-required">${missing.join('')}</footer>`);
   }
-  const base = '*,*::before,*::after{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;color:#242820;background:#fff;font-family:system-ui,sans-serif}img{max-width:100%;height:auto}a:focus-visible{outline:2px solid currentColor;outline-offset:4px}.site-required{padding:32px;max-width:1100px;margin:auto}.site-menu-category ul{list-style:none;padding:0}.site-menu-item{padding:14px 0;border-bottom:1px solid #e4e6e1}.site-menu-item-heading{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.site-menu-price{white-space:pre-wrap}.site-menu-description{font-size:14px;line-height:1.7}.site-hours{list-style:none;padding:0}.site-required-image img{max-height:520px;object-fit:cover}.site-service-note{padding:20px;text-align:center;font:12px system-ui;color:#585d54;border-top:1px solid #e4e6e1}';
+  const base = '*,*::before,*::after{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;min-height:100vh;color:#242820;background:#fff;font-family:system-ui,sans-serif}img{max-width:100%;height:auto}a:focus-visible{outline:2px solid currentColor;outline-offset:4px}.site-required{padding:32px;max-width:1100px;margin:auto}.site-menu-category ul{list-style:none;padding:0}.site-menu-item{padding:14px 0;border-bottom:1px solid #e4e6e1}.site-menu-item-heading{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}.site-menu-price{white-space:pre-wrap}.site-menu-description{font-size:14px;line-height:1.7}.site-hours{list-style:none;padding:0}.site-required-image img{max-height:520px;object-fit:cover}.site-service-note{padding:20px;text-align:center;font:12px system-ui;color:#585d54;border-top:1px solid #e4e6e1}.site-reservation{padding:44px 20px;margin:24px auto;max-width:720px;border-top:1px solid #e4e6e1;text-align:center}.site-reservation h2{font-size:22px;font-weight:500;margin:0 0 12px}.site-reservation-notice{color:#585d54;font-size:14px;line-height:1.7;margin:0 0 20px}.site-reservation-link{display:inline-block;padding:12px 22px;border:1px solid currentColor;color:inherit;text-decoration:none}.site-reservation-link:focus-visible{outline:2px solid currentColor;outline-offset:4px}.site-reservation-unavailable{color:#585d54;font-size:14px}';
   const motion = '@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}';
-  const note = generic('Online reservations are not available on this website. Please contact the restaurant directly.', '本网站尚未提供在线订位，请直接联系餐厅。');
+  const note = r.reservation_enabled
+    ? generic('Reservation requests are confirmed by the restaurant.', '订位申请由餐厅确认。')
+    : generic('Online reservations are not available on this website. Please contact the restaurant directly.', '本网站尚未提供在线订位，请直接联系餐厅。');
   append(`<footer class="site-service-note">${escapeHtml(note)}</footer>`);
   const body = chunks.join('');
   const html = `<!DOCTYPE html><html lang="${escapeHtml(r.primary_locale)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="${escapeHtml(WEBSITE_CSP)}"><meta name="referrer" content="no-referrer"><title>${escapeHtml(r.name)}</title><meta name="description" content="${escapeHtml((r.description ?? '').slice(0, 240))}"><style>${base}${css}${motion}</style></head><body>${body}</body></html>`;
