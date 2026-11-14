@@ -9,6 +9,7 @@ import { ApiError, errorBody } from './errors.js';
 import { registerAuth } from './auth.js';
 import { registerRestaurants } from './restaurant.js';
 import { registerAssets } from './assets.js';
+import { registerWebsites } from './website.js';
 
 export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   const app = Fastify({
@@ -16,12 +17,12 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
     trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
     logger: config.nodeEnv === 'test' ? false : {
       level: 'info',
-      redact: { paths: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]', 'password', 'token', 'DATABASE_URL', 'MIGRATION_DATABASE_URL', 'TOKEN_PEPPER', 'CURSOR_SECRET', 'OUTBOX_ENCRYPTION_KEY', 'SMTP_PASS'], censor: '[已脱敏]' },
+      redact: { paths: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]', 'password', 'token', 'DATABASE_URL', 'MIGRATION_DATABASE_URL', 'TOKEN_PEPPER', 'CURSOR_SECRET', 'OUTBOX_ENCRYPTION_KEY', 'SMTP_PASS', 'DEEPSEEK_API_KEY'], censor: '[已脱敏]' },
       serializers: { req: req => ({ method: req.method, id: req.id }), res: res => ({ statusCode: res.statusCode }) },
     },
   });
   app.register(cookie);
-  app.register(helmet, { global: true });
+  app.register(helmet, { global: true, contentSecurityPolicy: { directives: { imgSrc: ["'self'", 'data:', 'blob:'] } } });
   app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
   app.addHook('onRoute', options => {
     if (options.url.startsWith('/api/v1/auth/') && options.method === 'POST') options.config = { ...options.config, rateLimit: { max: 20, timeWindow: '1 minute' } };
@@ -50,13 +51,15 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   app.setNotFoundHandler((request, reply) => reply.code(404).send(errorBody(404, request.id)));
   app.get('/api/v1/health/ready', async () => ({
     status: 'ready', database: 'postgresql', email_mode: config.emailMode,
-    scope: 'merchant-core-and-assets', storage_mode: config.storageMode,
+    scope: 'merchant-core-assets-websites', storage_mode: config.storageMode,
+    website_model: config.website?.model ?? 'deepseek-flash', website_model_configured: Boolean(config.website?.apiKey), menu_recognition_enabled: false,
     production_acceptance_complete: false,
   }));
   app.register(async routes => {
     registerAuth(routes, pool, config);
     registerRestaurants(routes, pool, config);
     registerAssets(routes, pool, config);
+    registerWebsites(routes, pool, config);
   });
   return app;
 }

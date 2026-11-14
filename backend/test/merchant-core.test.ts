@@ -16,7 +16,7 @@ let sequence = 0;
 const password = '测试专用-Valid-Password-2026!';
 const newPassword = '测试专用-New-Password-2026!';
 interface Actor { cookie: string; csrf: string; email: string; password: string }
-const tables = 'asset_references,asset_upload_intents,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_references,asset_upload_intents,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 function testUrl(key: string, role: string): string {
   const value = process.env[key];
   assert.ok(value, `必须提供真实 ${key}，不跳过、不连接开发库`);

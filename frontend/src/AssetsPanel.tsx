@@ -312,6 +312,7 @@ export default function AssetsPanel({ restaurantId, busy, onBusyChange }: {
       <div><h3 id={`${prefix}-title`}>菜单与图片</h3><p className="micro">仅管理当前餐厅的素材。图片会清除EXIF等元数据后保存；上传不执行AI识别，也不会发布网页。</p></div>
       <button type="button" className="text-button" disabled={controlsLocked} onClick={() => readList()}>刷新素材</button>
     </header>
+    <div className="notice"><button type="button" disabled aria-describedby={`${prefix}-ocr-notruns`}>识别菜单（稍后开放）</button><p id={`${prefix}-ocr-notruns`} className="micro">未实现 / notruns：不执行 OCR，不读取菜单内容，不发送模型请求。</p></div>
     {list && <p className="micro assets-storage" role="status">{list.storage_mode === 'local' ? '本地文件保存，云端存储未配置' : '云端存储（S3）；不代表已完成生产验收'}</p>}
     <form className="asset-upload" onSubmit={upload} aria-label="上传当前餐厅素材">
       <fieldset disabled={controlsLocked}>

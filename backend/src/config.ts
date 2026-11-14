@@ -15,6 +15,7 @@ export interface Config {
   storageMode: 'local' | 's3';
   storageLocalRoot: string;
   s3?: { region: string; bucket: string; endpoint?: string; forcePathStyle: boolean };
+  website?: { apiKey?: string; baseUrl: string; model: string; publicOrigin: string; port: number; host: string; baseDomain?: string };
   emailMode: 'disabled' | 'smtp';
   smtp?: { host: string; port: number; secure: boolean; user: string; pass: string; from: string };
 }
@@ -71,7 +72,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!['true', 'false'].includes(pathStyle)) throw new Error('无效 S3_FORCE_PATH_STYLE');
     s3 = { region, bucket, endpoint, forcePathStyle: pathStyle === 'true' };
   }
-  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, emailMode: emailMode as Config['emailMode'], smtp };
+  const baseUrl = env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com';
+  if (baseUrl !== 'https://api.deepseek.com') throw new Error('本轮仅允许已核验的 DeepSeek 官方接口，禁止向未知主机发送密钥');
+  const model = env.DEEPSEEK_MODEL ?? 'deepseek-flash';
+  if (model !== 'deepseek-flash') throw new Error('本轮指定 DeepSeek V4.1 Flash，model 必须 deepseek-flash');
+  const sitePort = number('SITE_PORT', 4174);
+  const publicOrigin = env.SITE_PUBLIC_ORIGIN ?? `http://localhost:${sitePort}`;
+  const publicAddress = new URL(publicOrigin);
+  if (publicAddress.origin !== publicOrigin || publicAddress.username || publicAddress.password || publicOrigin === origin ||
+      !['http:', 'https:'].includes(publicAddress.protocol)) throw new Error('SITE_PUBLIC_ORIGIN 必须为独立站点 origin');
+  if (nodeEnv !== 'production' && (!['localhost', '127.0.0.1'].includes(publicAddress.hostname) || publicAddress.protocol !== 'http:' || Number(publicAddress.port) !== sitePort)) throw new Error('本轮本地站点只允许独立端口的回环 HTTP 地址');
+  if (nodeEnv === 'production' && publicAddress.protocol !== 'https:') throw new Error('正式站点必须配置 HTTPS origin，公网发布尚未验收');
+  const website = { apiKey: env.DEEPSEEK_API_KEY, baseUrl, model, publicOrigin, port: sitePort, host: '127.0.0.1', baseDomain: env.SITE_BASE_DOMAIN };
+  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, website, emailMode: emailMode as Config['emailMode'], smtp };
 }
 
 export function validateDatabaseUrl(value: string): void {

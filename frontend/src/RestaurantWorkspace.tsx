@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { api, ApiError } from './api';
 import AssetsPanel from './AssetsPanel';
+import WebsitePanel from './WebsitePanel';
 import { profileFields, profilePatch, toProfileDraft } from './profile';
 import type { ProfileDraft } from './profile';
 import type { OpeningHoursView, OpeningInterval, Restaurant, Versioned } from './types';
@@ -64,7 +65,22 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [draft, setDraft] = useState<ProfileDraft | null>(null);
   const [rows, setRows] = useState<HourRow[]>([]);
-  const [tab, setTab] = useState<'profile' | 'hours' | 'assets'>('profile');
+  const [tab, setTab] = useState<'profile' | 'hours' | 'assets' | 'website'>('profile');
+  const [websiteOpened, setWebsiteOpened] = useState(false);
+  const [websiteDirty, setWebsiteDirty] = useState(false);
+  const [websiteRequestBusy, setWebsiteRequestBusy] = useState(false);
+  const [websiteJobsBusy, setWebsiteJobsBusy] = useState(false);
+  const websiteLockRef = useRef({ request: false, jobs: false });
+  const websiteRequestChanged = useCallback((value: boolean) => {
+    websiteLockRef.current.request = value;
+    setWebsiteRequestBusy(value);
+    onBusyChange(value || websiteLockRef.current.jobs);
+  }, [onBusyChange]);
+  const websiteJobsChanged = useCallback((value: boolean) => {
+    websiteLockRef.current.jobs = value;
+    setWebsiteJobsBusy(value);
+    onBusyChange(value || websiteLockRef.current.request);
+  }, [onBusyChange]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
   const [syncError, setSyncError] = useState<unknown>(null);
@@ -73,7 +89,13 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const action = useAction(onBusyChange);
   const profileDirty = !!snapshot && !!draft && Object.keys(profilePatch(draft, snapshot.restaurant.data)).length > 0;
   const hoursDirty = !!snapshot && JSON.stringify(rows.map((row) => row.interval)) !== JSON.stringify(snapshot.hours.data.intervals);
-  const dirty = profileDirty || hoursDirty;
+  const dirty = profileDirty || hoursDirty || websiteDirty;
+  const otherBusy = busy && !websiteRequestBusy && !websiteJobsBusy;
+  const navigationBusy = otherBusy || websiteRequestBusy || action.pending;
+  const websiteRestaurantConflict = useCallback(() => {
+    setConflicted(true);
+    setConfirmRefresh(true);
+  }, []);
   const problems = hoursProblems(rows);
 
   useEffect(() => {
@@ -190,8 +212,8 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
       <button type="button" className="text-button" disabled={busy} onClick={() => { action.clear(); setConfirmRefresh(true); }}>刷新资料</button>
     </header>
     <div className="readiness">
-      <p>仅资料检查。菜单与图片可保存原始素材，菜单编辑与发布未实现。</p>
-      <p className="micro">{restaurant.readiness.missing_fields.length ? `待补充：${restaurant.readiness.missing_fields.map((field) => fieldLabels[field] ?? '其他资料').join('、')}` : '服务端检查暂无资料缺项；不代表可以发布。'}</p>
+      <p>可用网页 Agent 生成、隔离预览并单独确认本地发布。菜单与图片保存原始素材，菜单识别与编辑未实现。</p>
+      <p className="micro">{restaurant.readiness.missing_fields.length ? `待补充：${restaurant.readiness.missing_fields.map((field) => fieldLabels[field] ?? '其他资料').join('、')}` : '服务端检查暂无资料缺项；生成与本地发布仍须分别确认，不代表开放预订。'}</p>
     </div>
     {!editable && <p className="notice">当前餐厅状态不可编辑。系统状态与归属不由此页面修改。</p>}
     {conflicted && <div className="notice" role="status"><p>版本发生冲突或写入结果需要核对。未保存内容仍保留，保存已暂停；请确认刷新，不会自动覆盖另一窗口。</p><button type="button" className="text-button" disabled={busy} onClick={() => setConfirmRefresh(true)}>查看刷新确认</button></div>}
@@ -203,11 +225,13 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
     <ActionFeedback action={action} />
     <ErrorNotice error={syncError} />
     <div className="tab-nav" role="group" aria-label="资料分类">
-      <button type="button" className={tab === 'profile' ? 'selected' : ''} aria-pressed={tab === 'profile'} disabled={busy} onClick={() => setTab('profile')}>餐厅资料{profileDirty ? ' · 未保存' : ''}</button>
-      <button type="button" className={tab === 'hours' ? 'selected' : ''} aria-pressed={tab === 'hours'} disabled={busy} onClick={() => setTab('hours')}>周营业时间{hoursDirty ? ' · 未保存' : ''}</button>
-      <button type="button" className={tab === 'assets' ? 'selected' : ''} aria-pressed={tab === 'assets'} disabled={busy} onClick={() => setTab('assets')}>菜单与图片</button>
+      <button type="button" className={tab === 'profile' ? 'selected' : ''} aria-pressed={tab === 'profile'} disabled={navigationBusy} onClick={() => setTab('profile')}>餐厅资料{profileDirty ? ' · 未保存' : ''}</button>
+      <button type="button" className={tab === 'hours' ? 'selected' : ''} aria-pressed={tab === 'hours'} disabled={navigationBusy} onClick={() => setTab('hours')}>周营业时间{hoursDirty ? ' · 未保存' : ''}</button>
+      <button type="button" className={tab === 'assets' ? 'selected' : ''} aria-pressed={tab === 'assets'} disabled={navigationBusy} onClick={() => setTab('assets')}>菜单与图片</button>
+      <button type="button" className={tab === 'website' ? 'selected' : ''} aria-pressed={tab === 'website'} disabled={navigationBusy} onClick={() => { setWebsiteOpened(true); setTab('website'); }}>网页生成{websiteDirty ? ' · 未提交' : ''}</button>
     </div>
-    <div hidden={tab !== 'assets'}><AssetsPanel key={id} restaurantId={id} busy={busy} onBusyChange={onBusyChange} /></div>
+    {tab === 'assets' && <AssetsPanel key={id} restaurantId={id} busy={busy} onBusyChange={onBusyChange} />}
+    {websiteOpened && <div hidden={tab !== 'website'}><WebsitePanel key={id} restaurant={restaurant} active={tab === 'website'} busy={otherBusy || action.pending} restaurantDirty={profileDirty || hoursDirty || conflicted} onBusyChange={websiteRequestChanged} onJobsChange={websiteJobsChanged} onDirtyChange={setWebsiteDirty} onRestaurantConflict={websiteRestaurantConflict} /></div>}
     {tab === 'profile' ? <form onSubmit={saveProfile} aria-busy={action.pending}>
       <p className="micro">名称与主要语言必填。其余字段可留空；清空已填写内容将以 null 保存。只提交发生变化的固定字段。</p>
       <fieldset disabled={disabled}>
