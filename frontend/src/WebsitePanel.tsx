@@ -12,6 +12,7 @@ import {
 import {
   buildPreviewDocument, previewImageUrl, rewriteWebsitePreview, textDataUrl,
 } from './website-preview';
+import { ReservationSettingsPanel } from './ReservationSettingsPanel';
 import type { WebsiteAccepted, WebsiteAttempt, WebsiteDiagnostic, WebsiteJob, WebsiteModelCall, WebsiteProgress, WebsiteState, WebsiteUsage, WebsiteVersion } from './website-types';
 
 type Draft = { brief: string; assetIds: string[]; message: string; confirmed: boolean };
@@ -758,7 +759,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
 
   return <section className="website-panel" aria-labelledby={`${prefix}-title`}>
     <header className="assets-heading"><div><p className="eyebrow">网页 Agent</p><h3 id={`${prefix}-title`}>确认真实资料，再生成餐厅网页</h3><p className="micro">先讨论风格、布局与缺失信息，再生成版本。仅服务端调用模型，前端不传模型密钥。每账号每日合计最多 30 个建站任务 / 对话 / 识图，不是模型调用次数。</p></div><button type="button" className="text-button" disabled={pending !== null || !active} onClick={() => setReload(value => value + 1)}>核查网页状态</button></header>
-    <div className="notice"><p>本地发布仅供本机测试，未绑定公网域名；云端托管未验收。</p><p className="micro">菜单图片可在“菜单识图”中直接交给视觉大模型识别，无独立 OCR。只有人工确认的菜单文字会进入新网页；所选原文件仍可独立展示。生成与发布不会开放真实订位。</p></div>
+    <div className="notice"><p>本地发布仅供本机测试，未绑定公网域名；云端托管未验收。</p><p className="micro">菜单图片可在“菜单识图”中直接交给视觉大模型识别，无独立 OCR。只有人工确认的菜单文字会进入新网页；所选原文件仍可独立展示。在线订位由下方平台固定组件控制，不是模型生成的表单。</p></div><ReservationSettingsPanel restaurantId={restaurant.id} active={active} />
     <section className="website-capabilities" aria-labelledby={`${prefix}-capabilities`}><h3 id={`${prefix}-capabilities`}>Agent真实能力说明</h3><ul><li>读取已保存的餐厅资料，讨论风格与布局。</li><li>使用当前餐厅已上传且可用、经确认允许公开的素材。</li><li>将人工确认的菜单冻结进新网页版本。</li><li>生成版本，读取服务端计划、真实检查与修复结果；预览、发布须分别确认。</li></ul><p>顾客预订、订阅和统计尚未实现，不会添加伪功能按钮。</p><p>当前调试模式不限制累计tokens/调用或修复轮次，每次模型请求仍有网络超时；费用持续累计，发布须人工确认</p></section>
     {state && <p className="notice" role="status">{menuNeedsConfirm ? '菜单尚未确认，请到“菜单识图”核对并确认后再生成网页。' : state.menu.status === 'confirmed' ? `已确认菜单：${state.menu.item_count} 个菜品 · 菜单版本 ${state.menu.revision}；会冻结进下一次网页生成，不自动更新旧网页。` : '暂无已确认的结构化菜单；可以仅展示菜单原文件或生成纯文字页面。'}</p>}
     {restaurantDirty && <p className="notice" role="status">餐厅资料、营业时间或菜单还有未保存内容，或版本需要重新核对。请先保存、确认并刷新，再生成网页或发布。</p>}
