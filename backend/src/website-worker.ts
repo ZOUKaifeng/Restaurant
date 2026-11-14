@@ -8,17 +8,17 @@ import { renderWebsite } from './website-html.js';
 import { runWebsiteAgent } from './website-react.js';
 import type { WebsiteAgentObservation } from './website-agent-types.js';
 import {
-  requireWebsiteAI, verifyWebsiteVersion, websiteAudit, type WebsiteJob, type WebsiteMessage,
+  requireWebsiteAI, verifyWebsiteVersion, websiteAudit, websiteUsageNumber, websiteUsageSummary, type WebsiteJob, type WebsiteMessage,
   type WebsiteVersion,
 } from './website-access.js';
 
 export interface WebsiteJobClient { chat: typeof callWebsiteAgent; generate: typeof generateWebsite; react?: typeof runWebsiteAgent }
 const actualClient: WebsiteJobClient = { chat: callWebsiteAgent, generate: generateWebsite, react: runWebsiteAgent };
 const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_CONFIGURATION_INVALID', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
-  'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'AI_USAGE_UNAVAILABLE', 'AI_OUTPUT_TRUNCATED', 'WEBSITE_HTML_INVALID',
+  'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'AI_USAGE_UNAVAILABLE', 'AI_USAGE_INVALID', 'AI_OUTPUT_TRUNCATED', 'WEBSITE_HTML_INVALID',
   'WEBSITE_HTML_TOO_LARGE', 'WEBSITE_CHECKSUM_INVALID', 'WEBSITE_MANIFEST_INVALID',
   'AGENT_REPAIR_LIMIT', 'AGENT_TOKEN_LIMIT', 'AGENT_TIME_LIMIT', 'AGENT_STEP_LIMIT',
-  'WEBSITE_CONTEXT_REVOKED', 'JOB_INTERRUPTED']);
+  'WEBSITE_CONTEXT_REVOKED', 'JOB_INTERRUPTED', 'AGENT_CANCELLED']);
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object') {
     const value = error as { code?: unknown; status?: unknown; statusCode?: unknown };
@@ -67,25 +67,74 @@ async function claimJob(pool: Pool): Promise<{ job?: WebsiteJob; consumed: boole
     }
     const token = randomUUID();
     const running = (await db.query<WebsiteJob>(`UPDATE website_jobs SET status='running',lease_token=$2,
-      lease_expires_at=clock_timestamp()+CASE WHEN kind='generate' THEN interval '12 minutes' ELSE interval '3 minutes' END,
+      lease_expires_at=clock_timestamp()+interval '3 minutes',
       updated_at=clock_timestamp() WHERE id=$1 RETURNING *`, [job.id, token])).rows[0]!;
     return { job: running, consumed: true };
   });
 }
+function observedCall(observation: WebsiteAgentObservation): WebsiteAgentObservation['event']['model_call'] {
+  const call = observation.event.model_call;
+  const actions = { model_call_started: 'started', model_call_completed: 'completed', model_call_failed: 'failed' };
+  const expected = actions[observation.event.action as keyof typeof actions];
+  if (!call) {
+    if (expected) throw new ApiError(503, 'AI_USAGE_INVALID');
+    return undefined;
+  }
+  if (!expected || call.status !== expected || !Number.isInteger(call.index) || call.index < 1 || call.index > 2147483647 ||
+      typeof call.elapsed_ms !== 'number') throw new ApiError(503, 'AI_USAGE_INVALID');
+  websiteUsageNumber(call.elapsed_ms);
+  const counts = [call.prompt_tokens, call.completion_tokens, call.total_tokens];
+  const unknown = counts.every(value => value === null);
+  if (!unknown) {
+    for (const value of counts) {
+      if (typeof value !== 'number') throw new ApiError(503, 'AI_USAGE_INVALID');
+      websiteUsageNumber(value);
+    }
+    if (!Number.isSafeInteger(call.prompt_tokens! + call.completion_tokens!) ||
+        call.total_tokens !== call.prompt_tokens! + call.completion_tokens!) throw new ApiError(503, 'AI_USAGE_INVALID');
+  }
+  if ((call.status === 'started' && !unknown) || (call.status === 'completed' && unknown) ||
+      (call.status !== 'failed' && call.error_code !== undefined)) throw new ApiError(503, 'AI_USAGE_INVALID');
+  return { ...call, ...(call.status === 'failed' && call.error_code !== undefined ? { error_code: errorCode({ code: call.error_code }) } : {}) };
+}
 async function observeJob(pool: Pool, original: WebsiteJob, observation: WebsiteAgentObservation): Promise<void> {
+  const call = observedCall(observation);
   const code = await transaction(pool, async db => {
     const valid = await lockWorkerContext(db, original);
-    const job = (await db.query<WebsiteJob & { remaining: number }>(`SELECT *,
+    const job = (await db.query<WebsiteJob & { remaining: number | null }>(`SELECT *,
       extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
       FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
-    if (!job || job.status !== 'running' || job.lease_token !== original.lease_token) return 'JOB_INTERRUPTED';
-    if (!valid || job.remaining <= 0 || (observation.event.action === 'model_call_started' && job.remaining <= 80)) {
+    if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id) return 'JOB_INTERRUPTED';
+    const terminalReason = job.error_code === 'AGENT_CANCELLED' ? 'AGENT_CANCELLED' : 'JOB_INTERRUPTED';
+    const active = job.status === 'running' && job.lease_token === original.lease_token;
+    // 外部请求已发出：原始调用行中的令牌允许取消、过期或撤权后补账，但绝不写业务进度或复活任务。
+    if (call && call.status !== 'started' && original.lease_token && (active || job.status === 'failed')) {
+      const changed = await db.query(`UPDATE website_model_calls SET status=$4,prompt_tokens=$5,completion_tokens=$6,
+        total_tokens=$7,elapsed_ms=$8,error_code=$9,updated_at=clock_timestamp()
+        WHERE job_id=$1 AND call_index=$2 AND runner_token=$3 AND status='started'`,
+      [job.id, call.index, original.lease_token, call.status, call.prompt_tokens, call.completion_tokens,
+        call.total_tokens, call.elapsed_ms, call.error_code ?? null]);
+      if (!changed.rowCount) {
+        if (!active) return terminalReason;
+        const previous = (await db.query('SELECT status,runner_token FROM website_model_calls WHERE job_id=$1 AND call_index=$2', [job.id, call.index])).rows[0];
+        // completed 回调因取消而抛错后，ReAct 的 failed 回调不得覆盖已知账单。
+        if (call.status !== 'failed' || !previous || previous.runner_token !== original.lease_token || previous.status === 'started') return 'AI_USAGE_INVALID';
+        return undefined;
+      }
+    }
+    if (!active) return terminalReason;
+    if (!valid || job.remaining === null || job.remaining <= 0) {
       const reason = !valid ? 'WEBSITE_CONTEXT_REVOKED' : 'JOB_INTERRUPTED';
       await failJob(db, job, reason);
-      // 必须提交失败状态及引用释放，不能在事务内部 throw 导致回滚。
+      // 在事务外抛错，保留失败状态、引用释放以及已经发生的调用账单。
       return reason;
     }
-    const progress = JSON.stringify(observation.progress), event = JSON.stringify(observation.event);
+    if (call?.status === 'started') {
+      const inserted = await db.query(`INSERT INTO website_model_calls(job_id,call_index,runner_token,status,elapsed_ms)
+        VALUES($1,$2,$3,'started',$4) ON CONFLICT(job_id,call_index) DO NOTHING`, [job.id, call.index, original.lease_token, call.elapsed_ms]);
+      if (!inserted.rowCount) return 'AI_USAGE_INVALID';
+    }
+    const progress = JSON.stringify(observation.progress), event = JSON.stringify({ ...observation.event, ...(call ? { model_call: call } : {}) });
     const draft = observation.draft === undefined ? null : JSON.stringify(observation.draft);
     if (Buffer.byteLength(progress) > 64 * 1024 || Buffer.byteLength(event) > 24 * 1024 ||
         (draft !== null && (Buffer.byteLength(draft) > 1024 * 1024 ||
@@ -94,13 +143,24 @@ async function observeJob(pool: Pool, original: WebsiteJob, observation: Website
       await failJob(db, job, 'AGENT_STEP_LIMIT');
       return 'AGENT_STEP_LIMIT';
     }
+    let usage: Record<string, number>;
+    try {
+      const summary = await websiteUsageSummary(db, job.id);
+      usage = { model_calls: summary.model_calls, ...summary.totals, unknown_usage_calls: summary.unknown_usage_calls,
+        ...(observation.progress.elapsed_ms === undefined ? {} : { elapsed_ms: websiteUsageNumber(observation.progress.elapsed_ms) }) };
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.code !== 'AI_USAGE_INVALID') throw error;
+      await failJob(db, job, error.code);
+      return error.code;
+    }
     await db.query(`UPDATE website_jobs SET progress=$2::jsonb,
       trace=COALESCE((SELECT jsonb_agg(value ORDER BY ordinality) FROM
         jsonb_array_elements(trace || jsonb_build_array($3::jsonb)) WITH ORDINALITY AS events(value,ordinality)
         WHERE ordinality>GREATEST(0,jsonb_array_length(trace)+1-40)), '[]'::jsonb),
       agent_draft=CASE WHEN $4::jsonb IS NULL THEN agent_draft ELSE $4::jsonb END,
-      usage=$5::jsonb,updated_at=clock_timestamp() WHERE id=$1`,
-    [job.id, progress, event, draft, JSON.stringify({ model_calls: observation.progress.model_calls, total_tokens: observation.progress.total_tokens })]);
+      usage=$5::jsonb,lease_expires_at=CASE WHEN $6::boolean THEN GREATEST(lease_expires_at,clock_timestamp()+interval '3 minutes') ELSE lease_expires_at END,
+      updated_at=clock_timestamp() WHERE id=$1`,
+    [job.id, progress, event, draft, JSON.stringify(usage), call?.status === 'started']);
     return undefined;
   });
   if (code) throw new ApiError(503, code);

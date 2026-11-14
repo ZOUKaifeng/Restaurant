@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { test } from 'node:test';
+import { beforeEach, test, type TestContext } from 'node:test';
 import type { Config } from '../src/config.js';
 import { ApiError } from '../src/errors.js';
 import { runWebsiteAgent } from '../src/website-react.js';
@@ -63,9 +63,8 @@ function script(rounds: WebsiteToolCall[][], check?: (messages: WebsiteToolMessa
     }
     check?.(messages, index);
     assert.deepEqual(tools, websiteAgentTools);
-    const reserve = Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8') + 1024;
-    assert.equal(options?.maxTokens, Math.min(8000, 60000 - index * 3 - reserve));
-    assert.ok(options!.timeoutMs > 0 && options!.timeoutMs <= 75000);
+    assert.equal(options?.maxTokens, 16000);
+    assert.equal(options?.timeoutMs, 75000);
     assert.ok(Buffer.byteLength(JSON.stringify(messages), 'utf8') <= 1024 * 1024);
     assert.ok(index < rounds.length, '不应额外调用模型');
     return response(rounds[index++]!);
@@ -73,8 +72,11 @@ function script(rounds: WebsiteToolCall[][], check?: (messages: WebsiteToolMessa
 }
 const collect = (events: WebsiteAgentObservation[]) => async (event: WebsiteAgentObservation) => { events.push(structuredClone(event)); };
 
-test('native 工具自主计划、无效草稿、真实诊断、修复、全部完成与确定性 checksum', async t => {
-  t.mock.method(globalThis, 'fetch', async () => assert.fail('工具环路测试不能调用真实网络'));
+beforeEach(t => {
+  (t as TestContext).mock.method(globalThis, 'fetch', async () => assert.fail('工具环路测试不能调用真实网络'));
+});
+
+test('native 工具自主计划、无效草稿、真实诊断、修复、全部完成与确定性 checksum', async () => {
   const rounds = [
     [call('update_plan', plan()), call('read_context'), call('write_draft', badDraft), call('validate_draft')],
     [call('read_context'), call('write_draft', draft), call('validate_draft'), call('update_plan', plan('completed'))],
@@ -180,110 +182,166 @@ test('新的 draft revision 不能复用旧校验', async () => {
   assert.equal(result.progress.round, 2);
 });
 
-test('纯正文或普通 JSON 不可伪装工具完成，也不产生假计划', async () => {
+test('超过12轮纯正文或普通 JSON 仍反馈继续，不伪造计划和完成', async () => {
   const events: WebsiteAgentObservation[] = []; let calls = 0;
-  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async (_config, messages) => {
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), async (_config, messages) => {
+    assert.ok(calls < 17, '测试脚本必须明确结束，不能无限回传正文');
     if (calls > 0) {
       const state = executionState(messages);
       assert.deepEqual(state.last_observations, [{ tool_name: 'model_response', ok: false, code: 'AGENT_TOOL_REQUIRED' }]);
+      assert.deepEqual(state.execution_state.plan, []);
+      assert.equal(state.current_validation_passed, false);
       assert.equal(messages.length, 4);
       assert.equal(messages[3]!.role, 'user');
       assert.equal(messages[3]!.content, '必须选择提供的原生函数工具。普通正文或 JSON 不能完成任务。请继续工具调用。');
       assert.ok(messages.every(message => message.role === 'system' || message.role === 'user'));
       assert.ok(!JSON.stringify(messages).includes('{"finish":true,"valid":true}'));
     }
-    calls++; return { ...response([]), message: { role: 'assistant', content: '{"finish":true,"valid":true}', tool_calls: [] } };
-  }), { code: 'AGENT_STEP_LIMIT' });
-  assert.equal(calls, 12); assert.ok(events.every(event => event.progress.plan.length === 0));
-  assert.equal(events.filter(event => event.event.action === 'model_response').length, 12);
-  assert.equal(events.at(-1)!.progress.phase, 'failed');
+    calls++;
+    if (calls === 17) return response([call('update_plan', plan('completed')), call('write_draft', draft), call('validate_draft'), call('finish')]);
+    return { ...response([]), message: { role: 'assistant', content: '{"finish":true,"valid":true}', tool_calls: [] } };
+  });
+  assert.equal(calls, 17);
+  assert.equal(events.filter(event => event.event.action === 'model_response').length, 16);
+  assert.ok(events.filter(event => event.progress.model_calls <= 16).every(event => event.progress.plan.length === 0 && event.progress.phase !== 'ready'));
+  assert.equal(result.progress.phase, 'ready');
+  assert.deepEqual(result.usage, { prompt_tokens: 17, completion_tokens: 34, total_tokens: 51 });
 });
 
-test('最多4次写草稿，拒绝第五次并保留最近真实诊断', async () => {
+test('第五次写稿允许成功，修复前保留最近真实诊断且不自动发布', async () => {
   const events: WebsiteAgentObservation[] = [];
-  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), script([
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), script([
     [call('update_plan', plan()), call('write_draft', badDraft), call('validate_draft')],
     [call('write_draft', badDraft), call('validate_draft'), call('write_draft', badDraft), call('validate_draft')],
-    [call('write_draft', badDraft), call('validate_draft'), call('write_draft', draft)],
-  ])), { code: 'AGENT_REPAIR_LIMIT' });
-  assert.equal(events.filter(event => event.draft).length, 4);
-  assert.equal(events.at(-1)!.progress.round, 4);
-  const latest = events.filter(event => event.event.action === 'validate_draft').at(-1)!;
-  assert.deepEqual(events.at(-1)!.progress.diagnostics, latest.progress.diagnostics);
-  assert.equal(events.at(-1)!.progress.phase, 'failed');
+    [call('write_draft', badDraft), call('validate_draft')],
+    [call('write_draft', draft), call('validate_draft'), call('update_plan', plan('completed')), call('finish')],
+  ]));
+  assert.equal(events.filter(event => event.draft).length, 5);
+  const latestInvalid = events.filter(event => event.event.action === 'validate_draft' && event.event.status === 'error').at(-1)!;
+  const fifthWrite = events.filter(event => event.draft).at(-1)!;
+  assert.deepEqual(fifthWrite.progress.diagnostics, latestInvalid.progress.diagnostics);
+  assert.ok(latestInvalid.progress.diagnostics.length > 0);
+  assert.equal(result.progress.round, 5);
+  assert.equal(result.progress.phase, 'ready');
+  assert.deepEqual(result.progress.diagnostics, []);
+  assert.ok(events.every(event => !event.event.action.includes('publish')));
 });
 
-test('每响应最多4工具，全程最多24动作，达到预算不再调用模型', async () => {
-  for (const mode of ['batch', 'total']) {
-    let calls = 0; const events: WebsiteAgentObservation[] = [];
-    await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
-      calls++; return response(Array.from({ length: mode === 'batch' ? 5 : 4 }, () => call('read_context')));
-    }), { code: 'AGENT_STEP_LIMIT' });
-    assert.equal(calls, mode === 'batch' ? 1 : 6);
-    assert.equal(events.filter(event => event.event.action === 'read_context').length, mode === 'batch' ? 0 : 24);
-  }
+test('每响应最多4工具仍是协议限制，拒绝前已提交真实用量', async () => {
+  let calls = 0; const events: WebsiteAgentObservation[] = [];
+  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
+    calls++; return response(Array.from({ length: 5 }, () => call('read_context')));
+  }), { code: 'AGENT_STEP_LIMIT' });
+  assert.equal(calls, 1);
+  assert.equal(events.filter(event => event.event.action === 'read_context').length, 0);
+  assert.deepEqual(events.map(event => event.event.action), ['model_call_started', 'model_call_completed', 'agent_failed']);
+  assert.equal(events.at(-1)!.progress.total_tokens, 3);
 });
 
-test('每轮按 UTF8 {messages,tools} 字节加1024预留输入，输出取余额且 usage 真正累计', async () => {
-  const events: WebsiteAgentObservation[] = []; let calls = 0, used = 0;
-  const outputs: number[] = [];
-  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async (_config, messages, tools, options) => {
-    calls++;
-    const reserve = Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8') + 1024;
-    const max = Math.min(8000, 60000 - used - reserve);
-    assert.ok(max > 0); assert.equal(options?.maxTokens, max);
-    outputs.push(max);
-    used += 1 + max;
-    return { ...response([call('read_context')]), usage: { prompt_tokens: 1, completion_tokens: max, total_tokens: 1 + max } };
-  }), { code: 'AGENT_TOKEN_LIMIT' });
-  assert.ok(calls > 1 && calls < 12); assert.ok(outputs.at(-1)! < 8000);
-  assert.ok(used < 60000); assert.equal(events.at(-1)!.progress.total_tokens, used);
-  assert.equal(events.filter(event => event.event.action === 'model_call_started').length, calls);
-});
-
-test('剩余预算不够预留实际输入时，首次或下一轮都不外发也不虚增 model_calls', async () => {
-  let calls = 0;
+test('无累计门禁：16模型调用、62动作、15写稿及328000实测token仍真实完成', async () => {
+  const rounds = [[call('read_context'), call('update_plan', plan())],
+    ...Array.from({ length: 14 }, () => [call('write_draft', badDraft), call('validate_draft'), call('read_context'), call('update_plan', plan())]),
+    [call('write_draft', draft), call('validate_draft'), call('update_plan', plan('completed')), call('finish')]];
+  const next = script(rounds);
   const events: WebsiteAgentObservation[] = [];
-  await assert.rejects(runWebsiteAgent(config, 'b'.repeat(65000), snapshot, collect(events), async () => {
-    calls++; return response([]);
-  }), { code: 'AGENT_TOKEN_LIMIT' });
-  assert.equal(calls, 0); assert.equal(events.at(-1)!.progress.model_calls, 0);
-  assert.equal(events.some(event => event.event.action === 'model_call_started'), false);
-  let used = 0;
-  events.length = 0;
-  await assert.rejects(runWebsiteAgent(config, 'b'.repeat(45000), snapshot, collect(events), async (_config, messages, tools, options) => {
-    calls++;
-    const reserve = Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8') + 1024;
-    assert.equal(options?.maxTokens, Math.min(8000, 60000 - reserve));
-    used = reserve;
-    return { ...response([call('read_context')]), usage: { prompt_tokens: reserve - 1, completion_tokens: 1, total_tokens: reserve } };
-  }), { code: 'AGENT_TOKEN_LIMIT' });
-  assert.equal(calls, 1); assert.equal(events.at(-1)!.progress.model_calls, 1);
-  assert.equal(events.at(-1)!.progress.total_tokens, used);
-  assert.equal(events.filter(event => event.event.action === 'model_call_started').length, 1);
+  const perCall = { prompt_tokens: 4500, completion_tokens: 16000, total_tokens: 20500 };
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), async (...args) => ({ ...await next(...args), usage: perCall }));
+  assert.equal(result.progress.model_calls, 16);
+  assert.equal(result.progress.round, 15);
+  assert.equal(events.filter(event => ['read_context', 'update_plan', 'write_draft', 'validate_draft', 'finish'].includes(event.event.action)).length, 62);
+  assert.equal(result.progress.phase, 'ready');
+  assert.deepEqual(result.usage, { prompt_tokens: 72000, completion_tokens: 256000, total_tokens: 328000 });
+  assert.deepEqual(result.progress.diagnostics, []);
+  const completed = events.filter(event => event.event.action === 'model_call_completed');
+  assert.equal(completed.length, 16);
+  completed.forEach((event, index) => {
+    assert.deepEqual(event.event.model_call, { index: index + 1, ...perCall, elapsed_ms: event.event.model_call!.elapsed_ms, status: 'completed' });
+    assert.equal(event.progress.prompt_tokens, (index + 1) * 4500);
+    assert.equal(event.progress.completion_tokens, (index + 1) * 16000);
+    assert.equal(event.progress.total_tokens, (index + 1) * 20500);
+    const started = events.find(item => item.event.action === 'model_call_started' && item.event.model_call?.index === index + 1)!;
+    assert.equal(started.progress.model_calls, index + 1);
+    assert.equal(started.event.model_call!.prompt_tokens, null);
+    assert.equal(started.event.model_call!.completion_tokens, null);
+    assert.equal(started.event.model_call!.total_tokens, null);
+    assert.ok(started.progress.total_tokens < event.progress.total_tokens);
+  });
+  assert.ok(events.every(event => !event.event.action.includes('publish')));
 });
 
-test('provider 超出预留输入、输出或总额时，保存真实 usage 并停止，不执行返回工具或重试', async () => {
-  for (const mode of ['input', 'output', 'total']) {
-    let calls = 0, total = 0; const events: WebsiteAgentObservation[] = [];
-    await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async (_config, messages, tools, options) => {
-      calls++;
-      const reserve = Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8') + 1024;
-      const prompt = mode === 'input' ? reserve + 1 : 1;
-      const completion = mode === 'output' ? options!.maxTokens + 1 : 1;
-      total = mode === 'total' ? reserve + options!.maxTokens + 1 : prompt + completion;
-      return { ...response([call('write_draft', draft)]), usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total } };
-    }), { code: 'AGENT_TOKEN_LIMIT' });
-    assert.equal(calls, 1); assert.equal(events.at(-1)!.progress.total_tokens, total);
-    assert.equal(events.filter(event => event.event.action === 'write_draft').length, 0);
-  }
+test('32959实际token与5calls之后仍可继续，输入字节预留不误拦且输出不缩水', async () => {
+  const events: WebsiteAgentObservation[] = [];
+  const rounds = [[call('read_context')], [call('update_plan', plan())], [call('write_draft', draft)],
+    [call('validate_draft')], [call('update_plan', plan('completed'))], [call('finish')]];
+  let calls = 0;
+  const next = script(rounds, (messages, index) => {
+    const bytes = Buffer.byteLength(JSON.stringify({ messages, tools: websiteAgentTools }), 'utf8');
+    assert.ok(bytes > 65000 && bytes < 1024 * 1024);
+    if (index === 5) assert.equal(executionState(messages).execution_state.total_tokens, 32959);
+  });
+  const totals = [6592, 6592, 6592, 6592, 6591, 7000];
+  const result = await runWebsiteAgent(config, '中'.repeat(22000), snapshot, collect(events), async (...args) => {
+    const exchange = await next(...args);
+    const total = totals[calls++]!;
+    return { ...exchange, usage: { prompt_tokens: total - 1000, completion_tokens: 1000, total_tokens: total } };
+  });
+  assert.equal(calls, 6);
+  assert.equal(result.progress.phase, 'ready');
+  assert.deepEqual(result.usage, { prompt_tokens: 33959, completion_tokens: 6000, total_tokens: 39959 });
+  assert.equal(events.filter(event => event.event.action === 'model_call_completed')[4]!.progress.total_tokens, 32959);
+});
+
+test('高prompt用量超过请求字节及旧60k限制仍正常累计，不实施input reserve', async () => {
+  const events: WebsiteAgentObservation[] = []; let calls = 0;
+  const next = script([[call('read_context')],
+    [call('update_plan', plan('completed')), call('write_draft', draft), call('validate_draft'), call('finish')]]);
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), async (...args) => {
+    const [, messages, tools, options] = args;
+    assert.equal(options?.maxTokens, 16000);
+    assert.ok(Buffer.byteLength(JSON.stringify({ messages, tools }), 'utf8') < 70000);
+    calls++;
+    return { ...await next(...args), usage: { prompt_tokens: 70000, completion_tokens: 16000, total_tokens: 86000 } };
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(result.usage, { prompt_tokens: 140000, completion_tokens: 32000, total_tokens: 172000 });
+  assert.equal(events.filter(event => event.event.action === 'model_call_completed')[0]!.progress.total_tokens, 86000);
+  assert.equal(result.progress.phase, 'ready');
+});
+
+test('model_call_completed 在工具和validator前已持久化，后续异常不丢账单及诊断', async () => {
+  const events: WebsiteAgentObservation[] = []; let calls = 0;
+  const rounds = [[call('update_plan', plan()), call('write_draft', badDraft), call('validate_draft')],
+    [call('write_draft', draft), call('validate_draft')]];
+  const next = script(rounds);
+  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, async event => {
+    const completed = events.find(item => item.event.action === 'model_call_completed' && item.progress.model_calls === event.progress.model_calls);
+    if (['update_plan', 'write_draft', 'validate_draft'].includes(event.event.action)) assert.ok(completed, '计费事件必须先于工具观察持久化');
+    if (event.event.action === 'write_draft' && event.progress.round === 2) throw new Error('模拟校验前崩溃，敏感正文');
+    events.push(structuredClone(event));
+  }, async (...args) => { calls++; return { ...await next(...args), usage: { prompt_tokens: 50000, completion_tokens: 10000, total_tokens: 60000 } }; }), { code: 'AI_PROVIDER_UNAVAILABLE' });
+  assert.equal(calls, 2);
+  const completed = events.filter(event => event.event.action === 'model_call_completed');
+  assert.equal(completed.length, 2);
+  assert.equal(completed[1]!.progress.total_tokens, 120000);
+  assert.equal(events.at(-1)!.progress.total_tokens, 120000);
+  assert.equal(events.at(-1)!.progress.prompt_tokens, 100000);
+  assert.equal(events.at(-1)!.progress.completion_tokens, 20000);
+  assert.equal(events.at(-1)!.progress.phase, 'failed');
+  const invalid = events.find(event => event.event.action === 'validate_draft')!;
+  assert.deepEqual(events.at(-1)!.progress.diagnostics, invalid.progress.diagnostics);
+  assert.ok(!JSON.stringify(events).includes('敏感正文'));
 });
 
 test('缺失、不完整、非法或矛盾 usage 都终止，不以零或推测 token 代替真实用量', async () => {
-  for (const usage of [undefined, {}, { prompt_tokens: 1, completion_tokens: 2 },
+  for (const usage of [undefined, null, {}, { prompt_tokens: 1, completion_tokens: 2 },
     { prompt_tokens: -1, completion_tokens: 2, total_tokens: 1 },
     { prompt_tokens: 1.5, completion_tokens: 2, total_tokens: 3.5 },
-    { prompt_tokens: 1, completion_tokens: 2, total_tokens: 2 }]) {
+    { prompt_tokens: '1', completion_tokens: 2, total_tokens: 3 },
+    { prompt_tokens: NaN, completion_tokens: 2, total_tokens: 3 },
+    { prompt_tokens: 1, completion_tokens: Infinity, total_tokens: 3 },
+    { prompt_tokens: Number.MAX_SAFE_INTEGER + 1, completion_tokens: 0, total_tokens: Number.MAX_SAFE_INTEGER + 1 },
+    { prompt_tokens: 1, completion_tokens: 2, total_tokens: 2 },
+    { prompt_tokens: 1, completion_tokens: 2, total_tokens: 4 }]) {
     let calls = 0; const events: WebsiteAgentObservation[] = [];
     await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
       calls++; return { ...response([call('read_context')]), usage } as WebsiteToolExchange;
@@ -291,17 +349,56 @@ test('缺失、不完整、非法或矛盾 usage 都终止，不以零或推测 
     assert.equal(calls, 1); assert.equal(events.at(-1)!.progress.total_tokens, 0);
     assert.equal(events.at(-1)!.event.message, 'AI_USAGE_UNAVAILABLE');
     assert.equal(events.some(event => event.event.action === 'read_context'), false);
+    assert.equal(events.some(event => event.event.action === 'model_call_completed'), false);
+    const failed = events.find(event => event.event.action === 'model_call_failed')!.event.model_call!;
+    assert.deepEqual({ ...failed, elapsed_ms: 0 }, { index: 1, prompt_tokens: null, completion_tokens: null, total_tokens: null,
+      elapsed_ms: 0, status: 'failed', error_code: 'AI_USAGE_UNAVAILABLE' });
   }
 });
 
-test('墙钟8分钟硬限制，在观察授权之后再次检查，不发过时模型请求', async t => {
+test('墙钟超过8分钟仍成功，每次固定75000ms并实测逐次与累计elapsed', async t => {
   let now = 0, calls = 0;
   t.mock.method(Date, 'now', () => now);
   const events: WebsiteAgentObservation[] = [];
-  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, async event => {
-    events.push(event); if (event.event.action === 'model_call_started') now = 8 * 60 * 1000;
-  }, async () => { calls++; return response([]); }), { code: 'AGENT_TIME_LIMIT' });
-  assert.equal(calls, 0); assert.equal(events.at(-1)!.progress.phase, 'failed');
+  const next = script([[call('read_context')],
+    [call('update_plan', plan('completed')), call('write_draft', draft), call('validate_draft'), call('finish')]]);
+  const result = await runWebsiteAgent(config, '需求', snapshot, async event => {
+    events.push(structuredClone(event));
+    if (event.event.action === 'model_call_started') now += 9 * 60 * 1000;
+  }, async (...args) => {
+    calls++; now += 1234;
+    assert.equal(args[3]?.timeoutMs, 75000);
+    return next(...args);
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.progress.phase, 'ready');
+  assert.equal(result.progress.elapsed_ms, 2 * (9 * 60 * 1000 + 1234));
+  const completed = events.filter(event => event.event.action === 'model_call_completed');
+  assert.deepEqual(completed.map(event => event.event.model_call!.elapsed_ms), [541234, 541234]);
+  assert.deepEqual(completed.map(event => event.progress.elapsed_ms), [541234, 1082468]);
+});
+
+test('Number安全累加超界报AI_USAGE_INVALID而非业务token预算，原累计值不被污染', async () => {
+  for (const measured of [
+    { prompt_tokens: Number.MAX_SAFE_INTEGER, completion_tokens: 0, total_tokens: Number.MAX_SAFE_INTEGER },
+    { prompt_tokens: 0, completion_tokens: Number.MAX_SAFE_INTEGER, total_tokens: Number.MAX_SAFE_INTEGER },
+    { prompt_tokens: Number.MAX_SAFE_INTEGER - 1, completion_tokens: 1, total_tokens: Number.MAX_SAFE_INTEGER },
+  ]) {
+    let calls = 0; const events: WebsiteAgentObservation[] = [];
+    await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
+      calls++; assert.ok(calls <= 2);
+      return { ...response([call('read_context')]), usage: calls === 1 ? measured : { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } };
+    }), { code: 'AI_USAGE_INVALID' });
+    assert.equal(calls, 2);
+    assert.equal(events.at(-1)!.progress.total_tokens, Number.MAX_SAFE_INTEGER);
+    assert.equal(events.at(-1)!.progress.prompt_tokens, measured.prompt_tokens);
+    assert.equal(events.at(-1)!.progress.completion_tokens, measured.completion_tokens);
+    assert.equal(events.filter(event => event.event.action === 'model_call_completed').length, 1);
+    assert.equal(events.filter(event => event.event.action === 'read_context').length, 1);
+    assert.equal(events.find(event => event.event.action === 'model_call_failed')!.event.model_call!.total_tokens, 2);
+  }
+  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, async () => {}, async () => ({ ...response([]),
+    usage: { prompt_tokens: Number.MAX_SAFE_INTEGER, completion_tokens: 1, total_tokens: Number.MAX_SAFE_INTEGER } })), { code: 'AI_USAGE_INVALID' });
 });
 
 test('消息 UTF8 上限1MiB，超限不发任何外部请求', async () => {
@@ -513,13 +610,120 @@ test('原生轮次后普通正文丢弃旧 pair，保留实际状态和明确继
   assert.equal(result.progress.phase, 'ready'); assert.equal(calls, 3);
 });
 
-test('预算包含最近完整 native pair 的参数和反馈，不因摘要省略重复字段低估请求', async () => {
-  let calls = 0; const events: WebsiteAgentObservation[] = [];
+test('超过旧60k字节的最近完整native pair不预扣token，保留原参数与反馈后可完成', async () => {
+  const events: WebsiteAgentObservation[] = [];
   const largeDraft = { ...draft, html_body: `${draft.html_body}<!--${'p'.repeat(65000)}-->` };
-  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
-    calls++; assert.equal(calls, 1);
-    return response([call('read_context'), call('update_plan', plan()), call('write_draft', largeDraft)]);
-  }), { code: 'AGENT_TOKEN_LIMIT' });
-  assert.equal(calls, 1); assert.equal(events.at(-1)!.progress.model_calls, 1);
+  const first = [call('read_context'), call('update_plan', plan()), call('write_draft', largeDraft)];
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), script([first,
+    [call('validate_draft'), call('update_plan', plan('completed')), call('finish')]], (messages, index) => {
+    if (index !== 1) return;
+    assert.ok(Buffer.byteLength(JSON.stringify({ messages, tools: websiteAgentTools }), 'utf8') > 65000);
+    assert.deepEqual(toolResults(messages).map(item => item.id), first.map(item => item.id));
+    const assistant = messages[3];
+    assert.ok(assistant?.role === 'assistant');
+    assert.equal(assistant.tool_calls[2]!.function.arguments, first[2]!.function.arguments);
+    assert.equal(executionState(messages).current_draft, undefined);
+  }));
+  assert.equal(result.progress.model_calls, 2);
+  assert.equal(result.progress.phase, 'ready');
+  assert.equal(result.usage.total_tokens, 6);
   assert.equal(events.filter(event => event.draft).length, 1);
+});
+
+test('单条参数超过180KiB给有限反馈，下一轮不复制超大JSON、不伪造pair且能修正', async () => {
+  const huge = call('write_draft', { ...draft, html_body: 'p'.repeat(2 * 1024 * 1024) });
+  let calls = 0; const events: WebsiteAgentObservation[] = [];
+  const result = await runWebsiteAgent(config, '需求', snapshot, collect(events), async (_config, messages) => {
+    calls++; assert.ok(calls <= 3);
+    if (calls === 1) return response([call('read_context'), call('update_plan', plan())]);
+    if (calls === 2) return response([huge]);
+    const state = executionState(messages);
+    assert.equal(messages.length, 4);
+    assert.ok(messages.every(message => message.role === 'system' || message.role === 'user'));
+    assert.equal(state.context_loaded, true);
+    assert.equal(state.facts.restaurant.name, snapshot.restaurant.name);
+    assert.deepEqual(state.last_observations, [{ tool_name: 'write_draft', ok: false, code: 'TOOL_ARGUMENTS_INVALID' }]);
+    assert.ok(Buffer.byteLength(JSON.stringify(messages), 'utf8') < 20000);
+    return response([call('write_draft', draft), call('validate_draft'), call('update_plan', plan('completed')), call('finish')]);
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.progress.phase, 'ready');
+  assert.equal(result.progress.round, 1);
+  assert.equal(events.filter(event => event.event.action === 'write_draft' && event.event.status === 'error').length, 1);
+  assert.ok(Buffer.byteLength(JSON.stringify(events), 'utf8') < 20000);
+});
+
+test('取消信号在while及观察前后生效，不继续模型或工具，旧exchange fixture仍兼容', async () => {
+  for (const stage of ['before', 'started', 'completed', 'read_context', 'feedback', 'provider', 'provider_result']) {
+    const controller = new AbortController();
+    const events: WebsiteAgentObservation[] = []; let calls = 0;
+    if (stage === 'before') controller.abort();
+    await assert.rejects(runWebsiteAgent(config, '需求', snapshot, async event => {
+      events.push(structuredClone(event));
+      const cancelAction = stage === 'feedback' ? 'model_response' : ['started', 'completed'].includes(stage) ? `model_call_${stage}` : stage;
+      if (event.event.action === cancelAction) controller.abort();
+    }, async (_config, _messages, _tools, options) => {
+      calls++;
+      assert.equal(options?.signal, controller.signal);
+      assert.equal(options?.maxTokens, 16000);
+      assert.equal(options?.timeoutMs, 75000);
+      if (stage === 'provider') { controller.abort(); throw Object.assign(new Error('不得记录的取消原因'), { name: 'AbortError' }); }
+      if (stage === 'provider_result') controller.abort();
+      assert.equal(calls, 1, '取消后不能再调用模型');
+      return response(stage === 'feedback' ? [] : [call('read_context'), call('update_plan', plan('completed')), call('write_draft', draft), call('validate_draft')]);
+    }, controller.signal), { code: 'AGENT_CANCELLED' });
+    assert.equal(calls, ['before', 'started'].includes(stage) ? 0 : 1);
+    assert.equal(events.some(event => event.event.action === 'write_draft'), false);
+    assert.equal(events.at(-1)!.event.action, 'agent_failed');
+    assert.equal(events.at(-1)!.event.message, 'AGENT_CANCELLED');
+    if (['completed', 'provider_result'].includes(stage)) assert.equal(events.at(-1)!.progress.total_tokens, 3);
+    if (['started', 'completed', 'provider', 'provider_result'].includes(stage)) {
+      const failed = events.find(event => event.event.action === 'model_call_failed')!.event.model_call!;
+      assert.equal(failed.index, 1);
+      assert.equal(failed.error_code, 'AGENT_CANCELLED');
+      assert.equal(failed.total_tokens, ['completed', 'provider_result'].includes(stage) ? 3 : null);
+    }
+    assert.ok(!JSON.stringify(events).includes('不得记录的取消原因'));
+  }
+});
+
+test('provider异常附有效usage则累计并emit failed，缺失或矛盾usage保持null不伪造0', async () => {
+  for (const attached of [undefined, {}, { prompt_tokens: 5, completion_tokens: 6, total_tokens: 10 },
+    { prompt_tokens: 5, completion_tokens: 6, total_tokens: 11 }]) {
+    let calls = 0; const events: WebsiteAgentObservation[] = [];
+    const valid = attached?.total_tokens === 11;
+    await assert.rejects(runWebsiteAgent(config, '需求', snapshot, collect(events), async () => {
+      calls++; assert.ok(calls <= 2);
+      if (calls === 1) return response([call('read_context')], 10);
+      throw Object.assign(new ApiError(503, 'AI_OUTPUT_TRUNCATED'), { usage: attached, reasoning_content: '敏感推理不得存储', payload: config.website!.apiKey });
+    }), { code: 'AI_OUTPUT_TRUNCATED' });
+    assert.equal(calls, 2);
+    const failure = events.find(event => event.event.action === 'model_call_failed')!;
+    assert.equal(failure.event.model_call!.index, 2);
+    assert.equal(failure.event.model_call!.status, 'failed');
+    assert.equal(failure.event.model_call!.error_code, 'AI_OUTPUT_TRUNCATED');
+    assert.equal(failure.event.model_call!.prompt_tokens, valid ? 5 : null);
+    assert.equal(failure.event.model_call!.completion_tokens, valid ? 6 : null);
+    assert.equal(failure.event.model_call!.total_tokens, valid ? 11 : null);
+    assert.equal(failure.progress.total_tokens, valid ? 21 : 10);
+    assert.equal(events.at(-1)!.progress.total_tokens, valid ? 21 : 10);
+    assert.equal(events.at(-1)!.progress.prompt_tokens, valid ? 13 : 8);
+    assert.equal(events.at(-1)!.progress.completion_tokens, valid ? 8 : 2);
+    assert.equal(events.filter(event => event.event.action === 'read_context').length, 1);
+    assert.ok(!JSON.stringify(events).includes('敏感推理不得存储'));
+    assert.ok(!JSON.stringify(events).includes(config.website!.apiKey!));
+  }
+});
+
+test('观察回调在completed撤权时尝试failed且不执行工具，写入再次失败不遮蔽原错误', async () => {
+  let calls = 0; const attempted: WebsiteAgentObservation[] = [];
+  await assert.rejects(runWebsiteAgent(config, '需求', snapshot, async event => {
+    attempted.push(structuredClone(event));
+    if (event.event.action !== 'model_call_started') throw new ApiError(503, 'WEBSITE_CONTEXT_REVOKED');
+  }, async () => { calls++; return response([call('read_context')], 100); }), { code: 'WEBSITE_CONTEXT_REVOKED' });
+  assert.equal(calls, 1);
+  assert.deepEqual(attempted.map(event => event.event.action), ['model_call_started', 'model_call_completed', 'model_call_failed', 'agent_failed']);
+  assert.equal(attempted.at(-1)!.progress.total_tokens, 100);
+  assert.equal(attempted[2]!.event.model_call!.total_tokens, 100);
+  assert.equal(attempted[2]!.event.model_call!.error_code, 'WEBSITE_CONTEXT_REVOKED');
 });

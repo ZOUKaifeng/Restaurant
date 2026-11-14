@@ -26,7 +26,25 @@ export interface WebsiteJob extends WebsiteJobRecord {
     public_assets_confirmed?: true; expected_revision?: number; expected_restaurant_revision?: number;
   };
   snapshot: WebsiteSnapshot; agent_revision: number | null; lease_token: string | null;
-  lease_expires_at: Date | null;
+  lease_expires_at: Date | null; usage?: unknown;
+}
+export interface WebsiteUsageTotals { prompt_tokens: number; completion_tokens: number; total_tokens: number }
+export interface WebsiteUsageSummary { totals: WebsiteUsageTotals; model_calls: number; unknown_usage_calls: number }
+export function websiteUsageNumber(value: unknown): number {
+  if (typeof value !== 'number' && !(typeof value === 'string' && /^[0-9]+$/.test(value))) throw new ApiError(503, 'AI_USAGE_INVALID');
+  const result = Number(value);
+  if (!Number.isSafeInteger(result) || result < 0) throw new ApiError(503, 'AI_USAGE_INVALID');
+  return result;
+}
+export async function websiteUsageSummary(db: Database, jobId: string): Promise<WebsiteUsageSummary> {
+  const row = (await db.query(`SELECT count(*) AS model_calls,count(*) FILTER (WHERE total_tokens IS NULL) AS unknown_usage_calls,
+    COALESCE(sum(prompt_tokens),0) AS prompt_tokens,COALESCE(sum(completion_tokens),0) AS completion_tokens,
+    COALESCE(sum(total_tokens),0) AS total_tokens FROM website_model_calls WHERE job_id=$1`, [jobId])).rows[0];
+  const totals = { prompt_tokens: websiteUsageNumber(row.prompt_tokens), completion_tokens: websiteUsageNumber(row.completion_tokens),
+    total_tokens: websiteUsageNumber(row.total_tokens) };
+  if (!Number.isSafeInteger(totals.prompt_tokens + totals.completion_tokens) ||
+      totals.total_tokens !== totals.prompt_tokens + totals.completion_tokens) throw new ApiError(503, 'AI_USAGE_INVALID');
+  return { totals, model_calls: websiteUsageNumber(row.model_calls), unknown_usage_calls: websiteUsageNumber(row.unknown_usage_calls) };
 }
 export interface WebsiteVersionView {
   id: string; restaurant_id: string; version_number: number; summary: string; created_at: string;

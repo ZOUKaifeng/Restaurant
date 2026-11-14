@@ -41,6 +41,7 @@
     "unavailable_features": ["Customer reservation create/confirm/cancel APIs", "Customer registration and accounts", "Email subscription APIs", "Visitor analytics ingestion", "Production public-domain/CDN deployment", "Merchant custom-domain binding"],
     "future_integration": "Actual business components will be supplied when customer APIs are implemented. Do not invent endpoint names, booking success, fake counts or unsupported service promises. Render the current contact information and visible online-reservations-unavailable note."
   },
-  "execution_limits": {"max_model_calls": 12, "max_tool_actions": 24, "max_drafts": 4, "max_repairs": 3, "max_elapsed_seconds": 480, "max_total_tokens": 60000, "max_html_body_bytes": 102400, "max_css_bytes": 40960, "max_rendered_bytes": 204800},
+  "execution_limits": {"mode": "usage_observation", "max_model_calls": null, "max_tool_actions": null, "max_drafts": null, "max_repairs": null, "max_elapsed_seconds": null, "max_total_tokens": null, "per_request_timeout_seconds": 75, "per_request_max_output_tokens": 16000, "max_html_body_bytes": 102400, "max_css_bytes": 40960, "max_rendered_bytes": 204800},
+  "usage_observation": "No cumulative token/call/action/repair limit during this debugging phase. Continue until the draft is actually validated and plan finished, or the merchant cancels or an external/authentication error occurs. Actual prompt/completion/total tokens are recorded for every provider request. Minimize duplicate reads and plan updates; do not repeat finished work. Never claim success without validation.",
   "publish_authority": "Only merchant explicit publish action. The model cannot change restaurant facts, database schema, user permissions or deployment configuration."
 }

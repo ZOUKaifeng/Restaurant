@@ -28,15 +28,42 @@ export interface WebsiteProgress {
   round: number;
   model_calls: number;
   total_tokens: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  elapsed_ms?: number;
   plan: Array<{ id: string; title: string; status: 'pending' | 'in_progress' | 'completed' }>;
   diagnostics: WebsiteDiagnostic[];
 }
+export interface WebsiteModelCall {
+  index: number;
+  status: 'started' | 'completed' | 'failed';
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  elapsed_ms: number | null;
+  error_code?: string | null;
+}
+export interface WebsiteUsage {
+  job_id: string;
+  calls: Array<WebsiteModelCall & { error_code: string | null }>;
+  totals: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  unknown_usage_calls: number;
+  legacy_summary?: {
+    model_calls: number;
+    total_tokens: number | null;
+    prompt_tokens: null;
+    completion_tokens: null;
+  };
+}
+export interface WebsiteCancelInput { confirmed: true }
+export interface WebsiteCancelled { job_id: string; status: 'failed' }
 export interface WebsiteTrace {
   action: string;
   status: 'ok' | 'error';
   round: number;
   message: string;
   diagnostics: WebsiteDiagnostic[];
+  model_call?: WebsiteModelCall;
 }
 export interface WebsiteJob {
   id: string;

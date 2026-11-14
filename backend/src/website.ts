@@ -10,6 +10,7 @@ import {
   localWebsiteOrigin, ownedWebsiteRestaurant, publicationView, readyWebsiteVersion, requireWebsiteAI,
   requireWebsiteRestaurant, websiteAudit, websiteFingerprint, websiteJobColumns, websiteSettings,
   websiteSnapshot, websiteVersionColumns, websiteJobView, type WebsiteJobRecord, type WebsiteMessage,
+  websiteUsageNumber, websiteUsageSummary, type WebsiteJob,
   type WebsiteRestaurant, type WebsiteAgent as Agent, type WebsiteState, type WebsiteVersion,
 } from './website-access.js';
 
@@ -220,6 +221,48 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
       // HTML 仅作为 JSON 字符串返回，后台域名绝不执行生成内容。
       return { html: version.html, checksum: version.checksum, assets: version.snapshot.assets.map(asset => ({ id: asset.id,
         content_url: `/api/v1/restaurants/${rid}/assets/${asset.id}/content`, mime_type: asset.mime_type })) };
+    });
+  });
+  app.get(`${base}/jobs/:jobId/usage`, async (request, reply) => {
+    privateHeaders(reply);
+    const session = await requireSession(pool, config, request), { rid, jid } = params(request);
+    return locked(pool, config, session, rid, async db => {
+      const job = (await db.query<Pick<WebsiteJob, 'id' | 'progress' | 'usage'>>('SELECT id,progress,usage FROM website_jobs WHERE restaurant_id=$1 AND id=$2', [rid, jid])).rows[0];
+      if (!job) throw new ApiError(404);
+      const summary = await websiteUsageSummary(db, job.id);
+      const rows = await db.query(`SELECT call_index,status,prompt_tokens,completion_tokens,total_tokens,elapsed_ms,error_code
+        FROM website_model_calls WHERE job_id=$1 ORDER BY call_index`, [job.id]);
+      const calls = rows.rows.map(row => ({ index: row.call_index, status: row.status,
+        prompt_tokens: row.prompt_tokens === null ? null : websiteUsageNumber(row.prompt_tokens),
+        completion_tokens: row.completion_tokens === null ? null : websiteUsageNumber(row.completion_tokens),
+        total_tokens: row.total_tokens === null ? null : websiteUsageNumber(row.total_tokens),
+        elapsed_ms: row.elapsed_ms === null ? null : websiteUsageNumber(row.elapsed_ms), error_code: row.error_code }));
+      // 迁移前只有累计 total 的任务单独标识；不能伪造输入/输出为零或将历史账单当成新逐次记录。
+      const legacy = job.usage as { model_calls?: unknown; total_tokens?: unknown } | null | undefined;
+      const legacyCalls = summary.model_calls === 0 ? websiteUsageNumber(legacy?.model_calls ?? job.progress?.model_calls ?? 0) : 0;
+      const legacyTotal = legacy?.total_tokens ?? job.progress?.total_tokens;
+      return { job_id: job.id, calls, totals: summary.totals, unknown_usage_calls: summary.unknown_usage_calls + legacyCalls,
+        ...(legacyCalls ? { legacy_summary: { model_calls: legacyCalls, total_tokens: legacyTotal == null ? null : websiteUsageNumber(legacyTotal),
+          prompt_tokens: null, completion_tokens: null } } : {}) };
+    });
+  });
+  app.post(`${base}/jobs/:jobId/cancel`, async (request, reply) => {
+    privateHeaders(reply);
+    const session = (await requireWrite(pool, config, request))!, { rid, jid } = params(request);
+    const value = body(request, ['confirmed']);
+    if (value.confirmed !== true) invalid('confirmed', 'CONFIRMATION_REQUIRED');
+    return locked(pool, config, session, rid, async db => {
+      const job = (await db.query<WebsiteJob>('SELECT * FROM website_jobs WHERE restaurant_id=$1 AND id=$2 FOR UPDATE', [rid, jid])).rows[0];
+      if (!job) throw new ApiError(404);
+      if (job.status === 'failed' && job.error_code === 'AGENT_CANCELLED') return { job_id: job.id, status: 'failed' };
+      if (job.status !== 'queued' && job.status !== 'running') throw new ApiError(409, 'JOB_ALREADY_FINISHED');
+      await db.query(`UPDATE website_jobs SET status='failed',error_code='AGENT_CANCELLED',lease_token=NULL,lease_expires_at=NULL,
+        progress=CASE WHEN progress IS NULL THEN jsonb_build_object('phase','failed','round',0,'model_calls',0,'total_tokens',0,
+          'plan','[]'::jsonb,'diagnostics','[]'::jsonb) ELSE jsonb_set(progress,'{phase}','"failed"'::jsonb) END,
+        updated_at=clock_timestamp() WHERE id=$1`, [job.id]);
+      await db.query(`DELETE FROM asset_references WHERE restaurant_id=$1 AND purpose='website_job' AND resource_id=$2`, [rid, job.id]);
+      await websiteAudit(db, session.user.id, rid, job.id, 'website_job_failed', request.id);
+      return { job_id: job.id, status: 'failed' };
     });
   });
   app.get(`${base}/jobs/:jobId`, async (request, reply) => {

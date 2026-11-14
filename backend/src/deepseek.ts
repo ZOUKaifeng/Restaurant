@@ -51,14 +51,18 @@ async function jsonCompletion(config: Config, messages: Array<{ role: 'system' |
     throw new ApiError(503, controller.signal.aborted ? 'AI_TIMEOUT' : error instanceof SyntaxError ? 'AI_RESPONSE_INVALID' : 'AI_PROVIDER_UNAVAILABLE');
   } finally { clearTimeout(timer); }
 }
-export async function callWebsiteTools(config: Config, messages: WebsiteToolMessage[], tools: WebsiteToolDefinition[], options: { maxTokens: number; timeoutMs: number } = { maxTokens: 8000, timeoutMs: 75000 }): Promise<WebsiteToolExchange> {
+export async function callWebsiteTools(config: Config, messages: WebsiteToolMessage[], tools: WebsiteToolDefinition[], options: { maxTokens: number; timeoutMs: number; signal?: AbortSignal } = { maxTokens: 16000, timeoutMs: 75000 }): Promise<WebsiteToolExchange> {
   const value = settings(config);
   if (value.baseUrl !== 'https://api.deepseek.com' || value.model !== 'deepseek-flash') throw new ApiError(503, 'AI_CONFIGURATION_INVALID');
-  if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > 8000 || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 75000) throw new ApiError(503, 'AGENT_TOKEN_LIMIT');
+  if (!Number.isSafeInteger(options.maxTokens) || options.maxTokens < 1 || options.maxTokens > 16000 || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > 75000) throw new ApiError(503, 'AI_CONFIGURATION_INVALID');
   const body = JSON.stringify({ model: value.model, messages, tools, tool_choice: 'auto', parallel_tool_calls: false, thinking: { type: 'disabled' }, max_tokens: options.maxTokens, temperature: 0.3, stream: false });
   if (Buffer.byteLength(body) > 1100 * 1024) throw new ApiError(503, 'AGENT_STEP_LIMIT');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  const abort = () => controller.abort();
+  options.signal?.addEventListener('abort', abort, { once: true });
+  if (options.signal?.aborted) controller.abort();
+  let measuredUsage: WebsiteOutput['usage'] | undefined;
   try {
     const response = await fetch(`${value.baseUrl}/chat/completions`, { method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${value.apiKey}` }, body, signal: controller.signal });
     if (!response.ok) {
@@ -69,6 +73,11 @@ export async function callWebsiteTools(config: Config, messages: WebsiteToolMess
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let bytes = 0;
     while (true) { const next = await reader.read(); if (next.done) break; bytes += next.value.length; if (bytes > 512 * 1024) { await reader.cancel(); throw new ApiError(503, 'AI_RESPONSE_INVALID'); } chunks.push(next.value); }
     const result = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { choices?: Array<{ finish_reason?: string; message?: { content?: unknown; tool_calls?: unknown } }>; usage?: Record<string, unknown> };
+    const rawUsage = result.usage;
+    if (rawUsage && ['prompt_tokens', 'completion_tokens', 'total_tokens'].every(name => typeof rawUsage[name] === 'number' && Number.isSafeInteger(rawUsage[name]) && (rawUsage[name] as number) >= 0)) {
+      measuredUsage = { prompt_tokens: rawUsage.prompt_tokens as number, completion_tokens: rawUsage.completion_tokens as number, total_tokens: rawUsage.total_tokens as number };
+      if (measuredUsage.total_tokens < measuredUsage.prompt_tokens + measuredUsage.completion_tokens) measuredUsage = undefined;
+    }
     const choice = result.choices?.[0];
     if (!choice?.message || !['stop', 'tool_calls'].includes(choice.finish_reason ?? '')) throw new ApiError(503, choice?.finish_reason === 'length' ? 'AI_OUTPUT_TRUNCATED' : 'AI_RESPONSE_INVALID');
     const rawCalls = choice.message.tool_calls ?? [];
@@ -79,14 +88,13 @@ export async function callWebsiteTools(config: Config, messages: WebsiteToolMess
       if (typeof c.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(c.id) || c.type !== 'function' || typeof c.function?.name !== 'string' || c.function.name.length > 80 || typeof c.function.arguments !== 'string' || Buffer.byteLength(c.function.arguments) > 180 * 1024) throw new ApiError(503, 'AI_RESPONSE_INVALID');
       return { id: c.id, type: 'function', function: { name: c.function.name, arguments: c.function.arguments } };
     });
-    const usage = result.usage;
-    // 必须有真实用量才能执行有预算循环；不能用缺省0伪装未计费。
-    const count = (name: string) => { const n = usage?.[name]; if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 0) throw new ApiError(503, 'AI_USAGE_UNAVAILABLE'); return n; };
-    return { message: { role: 'assistant', content: null, tool_calls: calls }, usage: { prompt_tokens: count('prompt_tokens'), completion_tokens: count('completion_tokens'), total_tokens: count('total_tokens') } };
+    if (!measuredUsage) throw new ApiError(503, 'AI_USAGE_UNAVAILABLE');
+    return { message: { role: 'assistant', content: null, tool_calls: calls }, usage: measuredUsage };
   } catch (error) {
-    if (error instanceof ApiError) throw error;
-    throw new ApiError(503, controller.signal.aborted ? 'AI_TIMEOUT' : error instanceof SyntaxError ? 'AI_RESPONSE_INVALID' : 'AI_PROVIDER_UNAVAILABLE');
-  } finally { clearTimeout(timer); }
+    const failure = error instanceof ApiError ? error : new ApiError(503, options.signal?.aborted ? 'AGENT_CANCELLED' : controller.signal.aborted ? 'AI_TIMEOUT' : error instanceof SyntaxError ? 'AI_RESPONSE_INVALID' : 'AI_PROVIDER_UNAVAILABLE');
+    if (measuredUsage) Object.assign(failure, { usage: measuredUsage });
+    throw failure;
+  } finally { clearTimeout(timer); options.signal?.removeEventListener('abort', abort); }
 }
 
 function object(value: unknown, keys: string[]): Record<string, unknown> {

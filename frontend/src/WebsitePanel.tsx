@@ -9,7 +9,7 @@ import {
   isWebsiteJobActive, isWebsiteWriteUncertain, rewriteWebsitePreview, safeLocalPublicationUrl,
   websiteApi, websiteErrorMessage, websiteJobErrorMessage, websiteSlugPattern,
 } from './website-api';
-import type { WebsiteAccepted, WebsiteAttempt, WebsiteDiagnostic, WebsiteJob, WebsiteProgress, WebsiteState, WebsiteVersion } from './website-types';
+import type { WebsiteAccepted, WebsiteAttempt, WebsiteDiagnostic, WebsiteJob, WebsiteModelCall, WebsiteProgress, WebsiteState, WebsiteUsage, WebsiteVersion } from './website-types';
 
 type Draft = { brief: string; assetIds: string[]; message: string; confirmed: boolean };
 type Saved = Pick<Draft, 'brief' | 'assetIds'>;
@@ -22,7 +22,13 @@ const phaseLabels: Record<WebsiteProgress['phase'], string> = {
   repairing: '根据检查结果修复', ready: '检查通过', failed: '已停止',
 };
 const planStatusLabels = { pending: '待办', in_progress: '进行中', completed: '已完成' };
-function roundLabel(round: number) { return round <= 1 ? '第1稿' : `修复第${round - 1}轮`; }
+const callStatusLabels = { started: '进行中', completed: '已完成', failed: '已失败' };
+function countLabel(value: number | null | undefined) { return value == null ? '未知' : value.toLocaleString('zh-CN'); }
+function elapsedLabel(value: number | null | undefined) { return value == null ? '未知' : `${value.toLocaleString('zh-CN')} ms`; }
+function roundLabel(round: number) { return round === 0 ? '准备第1稿' : round === 1 ? '第1稿' : `修复第${round - 1}轮`; }
+function ModelCallCounts({ call }: { call: WebsiteModelCall }) {
+  return <p className="micro">调用 #{call.index} · {callStatusLabels[call.status]} · 输入 {countLabel(call.prompt_tokens)} / 输出 {countLabel(call.completion_tokens)} / 总计 {countLabel(call.total_tokens)} tokens · 耗时 {elapsedLabel(call.elapsed_ms)}{[call.prompt_tokens, call.completion_tokens, call.total_tokens].some(value => value === null) && ' · 未知用量不按 0 计算'}</p>;
+}
 function Diagnostics({ items }: { items: WebsiteDiagnostic[] }) {
   return <ul className="website-diagnostics" aria-label="服务端检查诊断">{items.map((item, index) => <li key={index}>
     <span className="website-diagnostic-location">{item.file} · 行 {item.line} / 列 {item.column} · <code>{item.code}</code></span>
@@ -34,18 +40,18 @@ function AgentProgress({ job, waiting, stale, headingId }: {
 }) {
   const progress = job?.progress;
   const trace = job?.trace ?? [];
-  const diagnostics = progress?.diagnostics ?? [...trace].reverse().find(item => item.diagnostics.length)?.diagnostics ?? [];
+  const diagnostics = progress?.diagnostics ?? [...trace].reverse().find(item => !item.model_call && !/model|模型/i.test(item.action) && item.diagnostics.length)?.diagnostics ?? [];
   const failed = job?.status === 'failed';
   return <section className="website-section website-agent-progress" aria-labelledby={headingId}>
     <div className="row-heading"><h3 id={headingId}>Agent建站进度</h3>{job && <time className="micro" dateTime={job.created_at}>{formatTime(job.created_at)}</time>}</div>
     <div aria-live="polite">
       {stale && <p className="micro">以下为上次成功读取的记录；状态核查已停止，请手动核查，不代表后台已停止。</p>}
       {waiting ? <p>生成任务已受理，等待服务端持久进度；尚不能确认已开始写稿。</p>
-        : !job ? <p className="micro">尚无生成任务。提交后读取服务端计划、草稿检查与最多3轮修复的记录，不模拟进度。</p>
+        : !job ? <p className="micro">尚无生成任务。提交后读取服务端计划、草稿检查与修复记录，不模拟进度。</p>
           : <>
             <p>当前步骤：{failed ? '已停止' : progress ? phaseLabels[progress.phase] : jobLabels[job.status]}
               {progress && <> · {progress.round === 0 && progress.phase === 'planning' ? '准备第1稿' : roundLabel(progress.round)}</>}</p>
-            {progress ? <p className="micro">已知模型调用 {progress.model_calls} / 12 次 · 已知累计 {progress.total_tokens.toLocaleString('zh-CN')} tokens（服务端计数）</p>
+            {progress ? <><p className="micro">已知模型调用 {countLabel(progress.model_calls)} 次 · 已知输入 {countLabel(progress.prompt_tokens)} / 输出 {countLabel(progress.completion_tokens)} / 累计 {countLabel(progress.total_tokens)} tokens · 耗时 {elapsedLabel(progress.elapsed_ms)}（服务端计数）</p><p className="micro">累计仅代表服务端已知用量；未返回的 token 计数为未知，不按 0 计算，不据此估算费用。</p></>
               : <p className="micro">此任务未提供进度；模型调用次数和 tokens 未知，不按任务数估算。</p>}
             {failed ? <p className="notice">{websiteJobErrorMessage(job.error_code)} 新生成须由你重新核对并点击下方生成按钮，可能产生新费用。</p>
               : job.status === 'succeeded' && progress?.phase === 'ready' ? <p className="notice">检查通过，等待你预览发布</p> : null}
@@ -59,8 +65,8 @@ function AgentProgress({ job, waiting, stale, headingId }: {
     {job && <details className="website-agent-details"><summary>模型与工具详情（服务端记录）</summary>
       <p className="micro">{progress ? `此任务已知调用 ${progress.model_calls} 次，累计 ${progress.total_tokens.toLocaleString('zh-CN')} tokens。` : '此任务调用与 tokens 未知。'} 仅读取后端进度与工具轨迹；计数不是金额，不估算实际费用。</p>
       {trace.length ? <ol className="website-agent-trace">{trace.map((item, index) => <li key={index}>
-        <p>{item.round === 0 ? '计划阶段' : roundLabel(item.round)} · {item.action} · {item.status === 'ok' ? '完成' : '错误'}</p>
-        <p>{item.message}</p>{item.diagnostics.length > 0 && <Diagnostics items={item.diagnostics} />}
+        <p>{item.round === 0 ? '计划阶段' : roundLabel(item.round)} · {item.action} · {item.model_call ? callStatusLabels[item.model_call.status] : item.status === 'ok' ? '完成' : '错误'}</p>
+        {item.model_call ? <ModelCallCounts call={item.model_call} /> : /model|模型/i.test(item.action) ? <p className="micro">此旧模型记录未提供逐次用量；不展示模型输入、输出或请求内容。</p> : <><p>{item.message}</p>{item.diagnostics.length > 0 && <Diagnostics items={item.diagnostics} />}</>}
       </li>)}</ol> : <p className="micro">暂无工具轨迹；不代表已执行真实检查。</p>}
     </details>}
   </section>;
@@ -98,13 +104,148 @@ function restoreAttempt(id: string): WebsiteAttempt | null {
   } catch { /* 本地重试存储不可用时，不发起任何请求。 */ }
   return null;
 }
-function ErrorMessage({ error, readOnly = false, submissionUnknown = false }: { error: unknown; readOnly?: boolean; submissionUnknown?: boolean }) {
+function ErrorMessage({ error, readOnly = false, submissionUnknown = false, cancellation = false }: {
+  error: unknown; readOnly?: boolean; submissionUnknown?: boolean; cancellation?: boolean;
+}) {
   if (!error) return null;
   const readFailed = readOnly && error instanceof ApiError && (error.status === 0 || error.code === 'RESPONSE_INVALID');
   return <div className="notice error-notice" role="alert">
     {submissionUnknown && <p>提交结果未知，不能据此认定后台任务已失败。原输入和幂等键保留。</p>}
-    <p>{readFailed ? '读取失败，保留上次读取的资料。请手动核查状态；不会因此重放写请求。' : websiteErrorMessage(error)}</p>
+    <p>{cancellation && isWebsiteWriteUncertain(error) ? '停止请求结果未知，不代表后台已停止。请手动核查网页状态；不会自动重发停止或生成请求。'
+      : readFailed ? '读取失败，保留上次读取的资料。请手动核查状态；不会因此重放写请求。' : websiteErrorMessage(error)}</p>
   </div>;
+}
+function useWebsiteUsage(restaurantId: string, jobId: string | null, job: WebsiteJob | undefined, active: boolean) {
+  const resource = `${restaurantId}:${jobId ?? ''}`;
+  const contextRef = useRef({ resource, active });
+  contextRef.current = { resource, active };
+  const [snapshot, setSnapshot] = useState<{ resource: string; value: WebsiteUsage } | null>(null);
+  const [failure, setFailure] = useState<{ resource: string; value: unknown } | null>(null);
+  const [openedResource, setOpenedResource] = useState<string | null>(null);
+  const [pendingResource, setPendingResource] = useState<string | null>(null);
+  const openedRef = useRef<string | null>(null);
+  const flightRef = useRef<AbortController | null>(null);
+  const refreshQueuedRef = useRef(false);
+  const autoBlockedRef = useRef(false);
+  const observedRef = useRef<{ metrics: string | null; calls: Map<number, string> }>({ metrics: null, calls: new Map() });
+
+  useEffect(() => {
+    openedRef.current = null;
+    refreshQueuedRef.current = false;
+    autoBlockedRef.current = false;
+    observedRef.current = { metrics: null, calls: new Map() };
+    setOpenedResource(null);
+    setSnapshot(null);
+    setFailure(null);
+    setPendingResource(null);
+  }, [resource]);
+  useEffect(() => {
+    if (!active) setPendingResource(null);
+    return () => {
+      flightRef.current?.abort();
+      flightRef.current = null;
+      refreshQueuedRef.current = false;
+    };
+  }, [resource, active]);
+
+  const load = useCallback(async function loadCurrent(automatic = false): Promise<void> {
+    if (!jobId || !active || contextRef.current.resource !== resource || !contextRef.current.active) return;
+    if (automatic && (openedRef.current !== resource || autoBlockedRef.current)) return;
+    if (flightRef.current) {
+      if (automatic) refreshQueuedRef.current = true;
+      return;
+    }
+    if (!automatic) autoBlockedRef.current = false;
+    openedRef.current = resource;
+    setOpenedResource(resource);
+    const controller = new AbortController();
+    flightRef.current = controller;
+    setPendingResource(resource);
+    setFailure(null);
+    try {
+      const value = await websiteApi.getUsage(restaurantId, jobId, controller.signal);
+      if (!controller.signal.aborted && contextRef.current.resource === resource) setSnapshot({ resource, value });
+    } catch (caught) {
+      if (!controller.signal.aborted && contextRef.current.resource === resource) {
+        autoBlockedRef.current = true;
+        setFailure({ resource, value: caught });
+      }
+    } finally {
+      if (flightRef.current === controller) {
+        flightRef.current = null;
+        if (!controller.signal.aborted && contextRef.current.resource === resource) setPendingResource(null);
+        const refresh = refreshQueuedRef.current;
+        refreshQueuedRef.current = false;
+        if (refresh && !controller.signal.aborted && !autoBlockedRef.current) void loadCurrent(true);
+      }
+    }
+  }, [restaurantId, jobId, resource, active]);
+
+  useEffect(() => {
+    const observed = observedRef.current;
+    const progress = job?.progress;
+    const metrics = JSON.stringify([progress?.prompt_tokens, progress?.completion_tokens, progress?.total_tokens,
+      job && !isWebsiteJobActive(job) ? job.status : null]);
+    let changed = observed.metrics !== null && observed.metrics !== metrics;
+    observed.metrics = metrics;
+    const latestCalls = new Map<number, WebsiteModelCall>();
+    for (const event of job?.trace ?? []) {
+      const call = event.model_call;
+      if (call && call.status !== 'started') latestCalls.set(call.index, call);
+    }
+    for (const call of latestCalls.values()) {
+      const signature = JSON.stringify([call.status, call.prompt_tokens, call.completion_tokens, call.total_tokens, call.elapsed_ms, call.error_code]);
+      if (observed.calls.get(call.index) !== signature) changed = true;
+      observed.calls.set(call.index, signature);
+    }
+    // 仅在用户打开后刷新终态/迟到用量；started 和滑出轨迹窗口都不会拉取全部历史。
+    if (changed && active && openedRef.current === resource) void load(true);
+  }, [resource, active, job, load]);
+
+  const opened = openedResource === resource;
+  const data = opened && snapshot?.resource === resource ? snapshot.value : null;
+  const error = opened && failure?.resource === resource ? failure.value : null;
+  const pending = pendingResource === resource;
+  const settling = active && opened && !error && !!data?.calls.some(call => call.status === 'started');
+  useEffect(() => {
+    if (!settling || pending) return;
+    // 终态任务也可能仍有原请求在结算；只核对账单，不更改任务状态。
+    const timer = window.setTimeout(() => void load(true), 5000);
+    return () => window.clearTimeout(timer);
+  }, [settling, pending, resource, load]);
+
+  const close = useCallback(() => {
+    openedRef.current = null;
+    refreshQueuedRef.current = false;
+    flightRef.current?.abort();
+    flightRef.current = null;
+    setOpenedResource(null);
+    setPendingResource(null);
+  }, []);
+
+  return { data, error, opened, pending, settling, load, close };
+}
+function WebsiteUsagePanel({ usage, jobId, active, headingId }: {
+  usage: ReturnType<typeof useWebsiteUsage>; jobId: string | null; active: boolean; headingId: string;
+}) {
+  const data = usage.data;
+  const legacy = data?.legacy_summary;
+  return <section className="website-section" aria-labelledby={headingId}>
+    <div className="row-heading"><h3 id={headingId}>本次生成用量</h3><div className="button-row"><button type="button" disabled={!jobId || !active || usage.pending} aria-expanded={usage.opened} onClick={() => void usage.load()}>{usage.pending ? '正在读取用量…' : usage.error ? '重试读取用量' : '查看本次用量'}</button>{usage.opened && <button type="button" className="text-button" onClick={usage.close}>关闭用量详情</button>}</div></div>
+    <p className="micro">仅查询最近一次生成；打开详情后按调用结束刷新，原请求仍在结算时每 5 秒只读核对账单。关闭详情、切换面板或读取失败即停止核对，不重发任务、不改变业务状态。仅展示计数，不展示模型原始输入、输出或顾客信息。</p>
+    {usage.settling && <p className="micro" role="status">原请求仍在结算，自动核对账单</p>}
+    {usage.pending && <p className="micro loading-text" role="status">正在读取逐次模型用量…</p>}
+    <ErrorMessage error={usage.error} readOnly />
+    {!!usage.error && <p className="micro">用量可能已变化，保留上次成功读取的计数；请手动再次查看，不会因此重试生成。</p>}
+    {legacy ? <div className="notice" role="status">
+      <p>{legacy.total_tokens === null ? '旧任务累计未知' : `旧任务仅记录累计 ${legacy.total_tokens} tokens`}，输入/输出分项未知，不能补造。</p>
+      <p className="micro">已记录模型调用 {countLabel(legacy.model_calls)} 次，但没有逐调用账单；不能补造每次输入、输出或总用量，也不按 0 计算。接口 totals 仅汇总新逐调用账单，不代表此旧任务的累计。</p>
+    </div> : data ? <>
+      <p className="micro" aria-live="polite">已知输入 {countLabel(data.totals.prompt_tokens)} / 输出 {countLabel(data.totals.completion_tokens)} / 总计 {countLabel(data.totals.total_tokens)} tokens（不是费用）</p>
+      {data.unknown_usage_calls > 0 && <p className="notice" role="status">{countLabel(data.unknown_usage_calls)} 次调用的 token 用量未知，不按 0 计算；已知累计不是完整用量，费用仍可能增加。</p>}
+      {data.calls.length ? <div style={{ overflowX: 'auto' }}><table><caption>本次模型调用的输入、输出与总用量</caption><thead><tr><th scope="col">调用</th><th scope="col">状态</th><th scope="col">输入 tokens</th><th scope="col">输出 tokens</th><th scope="col">总计 tokens</th><th scope="col">耗时</th></tr></thead><tbody>{[...data.calls].sort((a, b) => a.index - b.index).map(call => <tr key={call.index}><th scope="row">#{call.index}</th><td>{callStatusLabels[call.status]}</td><td>{countLabel(call.prompt_tokens)}</td><td>{countLabel(call.completion_tokens)}</td><td>{countLabel(call.total_tokens)}</td><td>{elapsedLabel(call.elapsed_ms)}</td></tr>)}</tbody></table></div> : <p className="micro">服务端尚无调用记录；不代表无需费用。</p>}
+    </> : <p className="micro">{usage.opened ? '尚未成功读取本次用量，计数未知。' : jobId ? '点击按钮读取本次生成的实际用量。' : '尚无生成任务，用量未知。'}</p>}
+  </section>;
 }
 function waitForPoll(signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
@@ -143,7 +284,10 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const [loadError, setLoadError] = useState<unknown>(null);
   const [error, setError] = useState<unknown>(null);
   const [note, setNote] = useState('');
-  const [pending, setPending] = useState<WebsiteAttempt['kind'] | 'retry' | null>(null);
+  const [pending, setPending] = useState<WebsiteAttempt['kind'] | 'retry' | 'cancel' | null>(null);
+  const [cancelTargetId, setCancelTargetId] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<unknown>(null);
+  const [cancelNeedsCheck, setCancelNeedsCheck] = useState(false);
   const [acknowledged, setAcknowledged] = useState<Acknowledged | null>(null);
   const [reload, setReload] = useState(0);
   const [assetReload, setAssetReload] = useState(0);
@@ -220,6 +364,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   useEffect(() => {
     if (active) return;
     closePreview();
+    setCancelTargetId(null);
     if (flightRef.current) {
       flightRef.current.abort();
       flightRef.current = null;
@@ -269,6 +414,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     setLoadError(null);
     setChecking(false);
     setPublicationNeedsCheck(false);
+    setCancelNeedsCheck(false);
   }, [updateDraft, updateSaved]);
 
   useEffect(() => {
@@ -341,7 +487,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     ? selected.version_number < Math.max(...state.versions.map(version => version.version_number))
     : selected.version_number < publishedNumber);
   const inputLocked = busy || pending !== null || !!attempt || loading || checking || !active;
-  const paidLocked = inputLocked || jobsActive || checking || loading || !!loadError || !state?.model_configured || restaurantDirty
+  const paidLocked = inputLocked || jobsActive || cancelNeedsCheck || checking || loading || !!loadError || !state?.model_configured || restaurantDirty
     || !['draft', 'active'].includes(restaurant.status);
   const missingSelected = draft.assetIds.some(id => !assets.some(asset => asset.id === id));
   const factsConfirmed = draft.confirmed && confirmedRevisionRef.current === restaurant.revision;
@@ -354,6 +500,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     [loading, '正在首次读取网页状态。'],
     [checking, '正在核查网页任务与版本。'],
     [!!loadError, '网页状态读取失败，请先手动核查成功。'],
+    [cancelNeedsCheck, '停止请求结果待核查，请先手动读取网页状态，不要重复生成。'],
     [!state, '尚未读到可确认的后端网页状态。'],
     [!!state && !state.model_configured, '网页模型未配置，不能生成；不会使用模拟结果。'],
     [jobsActive, '已有后台建站或对话任务，请等待完成。'],
@@ -433,6 +580,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     }
     setPending(retry ? 'retry' : request.kind);
     setError(null);
+    setCancelError(null);
     setNote('');
     keepAttempt(request);
     callbacksRef.current.onBusyChange(true);
@@ -448,6 +596,60 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       if (mountedRef.current && !controller.signal.aborted) {
         setError(caught);
         if (request.kind === 'publish') setChecking(false);
+      }
+    } finally {
+      if (flightRef.current === controller) {
+        flightRef.current = null;
+        callbacksRef.current.onBusyChange(false);
+        if (mountedRef.current) setPending(null);
+      }
+    }
+  }
+  async function stopGeneration(jobId: string) {
+    const latest = [...(stateRef.current?.jobs ?? [])].filter(job => job.kind === 'generate')
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+    if (!active || busy || pending !== null || flightRef.current || cancelNeedsCheck || cancelTargetId !== jobId
+      || latest?.id !== jobId || !isWebsiteJobActive(latest)) return;
+    const controller = new AbortController();
+    flightRef.current = controller;
+    pollFlightRef.current?.abort();
+    pollFlightRef.current = null;
+    setPending('cancel');
+    setCancelNeedsCheck(true);
+    setChecking(true);
+    setError(null);
+    setCancelError(null);
+    setNote('正在提交你二次确认的停止请求；尚不能认定后台已停止。');
+    setPublicationConfirmed(false);
+    setPublishTarget(null);
+    callbacksRef.current.onBusyChange(true);
+    let confirmed = false;
+    try {
+      await websiteApi.cancel(restaurant.id, jobId, { confirmed: true }, controller.signal);
+      if (controller.signal.aborted) return;
+      confirmed = true;
+      setCancelTargetId(null);
+      setNote('服务端已确认停止本次生成，不会自动发布或重新生成；已发生的费用仍须核对。正在读取最新任务状态。');
+      const next = await websiteApi.get(restaurant.id, controller.signal);
+      if (controller.signal.aborted) return;
+      applyState(next, false);
+      if (next.jobs.some(isWebsiteJobActive)) setReload(value => value + 1);
+    } catch (caught) {
+      if (!mountedRef.current || controller.signal.aborted) return;
+      setChecking(false);
+      setCancelTargetId(null);
+      if (confirmed) {
+        setLoadError(caught);
+        setNote('服务端已确认停止，但最新任务状态读取失败。请手动核查；不会再次发送停止或生成请求。');
+      } else {
+        setCancelError(caught);
+        if (isWebsiteWriteUncertain(caught)) {
+          setNote('停止请求结果未知，不代表后台已停止。请手动核查网页状态；不会自动重发停止请求或重新生成。');
+        } else {
+          setCancelNeedsCheck(false);
+          setNote('停止请求未获确认，请核查任务状态后再决定；不会自动重复提交。');
+          if (!(caught instanceof ApiError && caught.status === 401)) setReload(value => value + 1);
+        }
       }
     } finally {
       if (flightRef.current === controller) {
@@ -515,27 +717,42 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const generationJobs = [...(state?.jobs ?? [])].filter(job => job.kind === 'generate')
     .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
   const generationWaiting = acknowledged?.kind === 'generate' && !generationJobs.some(job => job.id === acknowledged.job_id);
-  const progressJob = generationWaiting ? undefined : generationJobs.find(isWebsiteJobActive) ?? generationJobs[0];
+  const progressJob = generationWaiting ? undefined : generationJobs[0];
+  const usageJobId = generationWaiting ? acknowledged?.job_id ?? null : progressJob?.id ?? null;
+  const usage = useWebsiteUsage(restaurant.id, usageJobId, progressJob, active);
+  const canStopGeneration = !!progressJob && isWebsiteJobActive(progressJob);
+  useEffect(() => {
+    setCancelTargetId(null);
+  }, [restaurant.id, usageJobId, canStopGeneration]);
 
   return <section className="website-panel" aria-labelledby={`${prefix}-title`}>
     <header className="assets-heading"><div><p className="eyebrow">网页 Agent</p><h3 id={`${prefix}-title`}>确认真实资料，再生成餐厅网页</h3><p className="micro">先讨论风格、布局与缺失信息，再生成版本。仅服务端调用模型，前端不传模型密钥。每账号每日合计最多 30 个建站任务 / 对话 / 识图，不是模型调用次数。</p></div><button type="button" className="text-button" disabled={pending !== null || !active} onClick={() => setReload(value => value + 1)}>核查网页状态</button></header>
     <div className="notice"><p>本地发布仅供本机测试，未绑定公网域名；云端托管未验收。</p><p className="micro">菜单图片可在“菜单识图”中直接交给视觉大模型识别，无独立 OCR。只有人工确认的菜单文字会进入新网页；所选原文件仍可独立展示。生成与发布不会开放真实订位。</p></div>
-    <section className="website-capabilities" aria-labelledby={`${prefix}-capabilities`}><h3 id={`${prefix}-capabilities`}>Agent真实能力说明</h3><ul><li>读取已保存的餐厅资料，讨论风格与布局。</li><li>使用当前餐厅已上传且可用、经确认允许公开的素材。</li><li>将人工确认的菜单冻结进新网页版本。</li><li>生成版本，读取服务端计划、真实检查与修复结果；预览、发布须分别确认。</li></ul><p>顾客预订、订阅和统计尚未实现，不会添加伪功能按钮。</p><p>单次生成可能有多次模型调用与 tokens 费用。最多3轮修复，最多12次模型调用和60,000 tokens / 8min，达到上限停止；每轮真实费用可能增加。上限由后端执行，页面只读已知计数。</p></section>
+    <section className="website-capabilities" aria-labelledby={`${prefix}-capabilities`}><h3 id={`${prefix}-capabilities`}>Agent真实能力说明</h3><ul><li>读取已保存的餐厅资料，讨论风格与布局。</li><li>使用当前餐厅已上传且可用、经确认允许公开的素材。</li><li>将人工确认的菜单冻结进新网页版本。</li><li>生成版本，读取服务端计划、真实检查与修复结果；预览、发布须分别确认。</li></ul><p>顾客预订、订阅和统计尚未实现，不会添加伪功能按钮。</p><p>当前调试模式不限制累计tokens/调用或修复轮次，每次模型请求仍有网络超时；费用持续累计，发布须人工确认</p></section>
     {state && <p className="notice" role="status">{menuNeedsConfirm ? '菜单尚未确认，请到“菜单识图”核对并确认后再生成网页。' : state.menu.status === 'confirmed' ? `已确认菜单：${state.menu.item_count} 个菜品 · 菜单版本 ${state.menu.revision}；会冻结进下一次网页生成，不自动更新旧网页。` : '暂无已确认的结构化菜单；可以仅展示菜单原文件或生成纯文字页面。'}</p>}
     {restaurantDirty && <p className="notice" role="status">餐厅资料、营业时间或菜单还有未保存内容，或版本需要重新核对。请先保存、确认并刷新，再生成网页或发布。</p>}
     <section className="website-section" aria-labelledby={`${prefix}-facts`}><div className="row-heading"><h3 id={`${prefix}-facts`}>已保存资料 · 只读确认</h3><span className="micro">餐厅版本 {restaurant.revision}</span></div><dl className="website-facts">{profileFields.map(field => <div key={field.key} className={field.key === 'description' ? 'wide' : ''}><dt>{field.label}</dt><dd>{restaurant[field.key] || '尚未填写'}</dd></div>)}</dl><p className="micro">Agent 不修改餐厅事实；请在“餐厅资料”中补充并保存。{restaurant.readiness.missing_fields.length ? `仍有 ${restaurant.readiness.missing_fields.length} 项待补充，请核对资料检查。` : '资料检查无缺项也不代表预订功能已开通。'}</p></section>
     {loading && <div className="workspace-loading" aria-busy="true" role="status"><p className="micro">正在读取网页 Agent、版本和任务…</p><div className="skeleton-line" /><div className="skeleton-line short" /></div>}
     <ErrorMessage error={loadError} readOnly />
     {state && !state.model_configured && <p className="notice" role="status">网页 Agent 未配置，付费按钮已停用。已有版本仍可预览；不会使用模拟生成。</p>}
-    <div aria-live="polite" aria-atomic="true">{pending && <p className="micro loading-text" role="status">{pending === 'retry' ? '正在核查并重试同一请求…' : '正在提交请求（单次 API 最长等待 20 秒）…'}</p>}{note && <p className="notice" role="status">{note}</p>}</div>
+    <div aria-live="polite" aria-atomic="true">{pending && <p className="micro loading-text" role="status">{pending === 'retry' ? '正在核查并重试同一请求…' : pending === 'cancel' ? '正在提交停止请求并核查状态…' : '正在提交请求（单次 API 最长等待 20 秒）…'}</p>}{note && <p className="notice" role="status">{note}</p>}</div>
     <ErrorMessage error={error} submissionUnknown={!!attempt && isWebsiteWriteUncertain(error)} />
+    <ErrorMessage error={cancelError} cancellation />
     {attempt && !pending && <section className="notice" aria-labelledby={`${prefix}-uncertain`}><h3 id={`${prefix}-uncertain`}>本次{attempt.kind === 'chat' ? '需求发送' : attempt.kind === 'generate' ? '网页生成' : '本地发布'}结果尚未确认</h3><p>原输入和幂等键保持不变，编辑与新付费操作已暂停。核查后只重试同一请求，不会静默换键；本窗口刷新后也会尝试恢复重试信息。</p>{attempt.kind === 'publish' && <p className="micro">待核查的版本：{state?.versions.find(version => version.id === attempt.body.version_id)?.version_number ?? '请核对版本记录'}。本次请求不会随预览选择改变。</p>}<button type="button" disabled={busy || !active} onClick={() => void run(attempt, true)}>核查并重试</button></section>}
     {jobsActive && <section className="notice" aria-live="polite"><h3>后台任务正在进行</h3><p>付费操作与餐厅切换已暂停。可以预览已有版本；这里不会因等待超过 60 秒就声称任务失败。</p>{acknowledged && !state?.jobs.some(job => job.id === acknowledged.job_id) && <p className="micro">{acknowledged.kind === 'chat' ? '需求讨论' : '网页生成'} · 已受理，正在核对持久任务记录。</p>}{activeJobs.map(job => <p key={job.id} className="micro">{job.kind === 'chat' ? '需求讨论' : '网页生成'} · {jobLabels[job.status]} · {formatTime(job.created_at)}</p>)}<p className="micro">页面可恢复服务端任务。网络核查失败时不会重复提交模型调用。</p></section>}
-    <AgentProgress job={progressJob} waiting={!!generationWaiting} stale={!!loadError} headingId={`${prefix}-agent-progress`} />
+    <AgentProgress job={progressJob} waiting={!!generationWaiting} stale={!!loadError || cancelNeedsCheck} headingId={`${prefix}-agent-progress`} />
+    {canStopGeneration && progressJob && <section className="notice" aria-labelledby={`${prefix}-cancel-title`}>
+      <h3 id={`${prefix}-cancel-title`}>手动停止本次生成</h3>
+      <p className="micro">仅针对当前餐厅最近一次仍排队或运行的生成任务；不会自动停止循环，已发生的费用不撤销。</p>
+      {cancelTargetId === progressJob.id ? <><p>确认停止本次生成？停止后不自动发布、不自动重新生成；已发生的模型费用仍会累计。</p><div className="button-row"><button type="button" disabled={!active || busy || pending !== null || cancelNeedsCheck} onClick={() => void stopGeneration(progressJob.id)}>确认停止本次生成</button><button type="button" className="text-button" disabled={pending === 'cancel'} onClick={() => setCancelTargetId(null)}>继续生成，返回</button></div></>
+        : <button type="button" disabled={!active || busy || pending !== null || cancelNeedsCheck} onClick={() => setCancelTargetId(progressJob.id)}>停止本次生成</button>}
+      {cancelNeedsCheck && <p className="micro" role="status">停止请求状态仍待核对，请手动核查网页状态，不据此认定后台已停止。</p>}
+    </section>}
+    <WebsiteUsagePanel usage={usage} jobId={usageJobId} active={active} headingId={`${prefix}-usage-title`} />
     <section className="website-section" aria-labelledby={`${prefix}-chat-title`}><h3 id={`${prefix}-chat-title`}>01 / 与 Agent 确认需求</h3><p className="micro">说明喜欢的风格、页面布局和展示重点。Agent 根据已保存事实追问缺失信息；图片、菜单不会在需求讨论中发送识别。</p><ol className="website-messages" aria-label="网页需求对话">{state?.agent.messages.map((message, index) => <li key={index} className={`website-message ${message.role}`}><span className="micro">{message.role === 'user' ? '你' : '网页 Agent'}</span><p>{message.content}</p></li>)}</ol>{state?.agent.messages.length === 0 && <p className="micro website-empty">尚无对话。可以告诉 Agent 你想要的风格，或直接填写下面的官网需求。</p>}<form onSubmit={sendMessage}><div className="field"><label htmlFor={`${prefix}-message`}>风格与布局需求</label><textarea id={`${prefix}-message`} rows={3} maxLength={2000} value={draft.message} disabled={inputLocked} onChange={event => updateDraft({ ...draft, message: event.target.value })} placeholder="例如：白底、绿色细线；先介绍餐厅，再展示菜品与联系方式。不要编造菜单价格或预订功能。" /><span className="micro">{draft.message.length} / 2000 · 未发送内容仅保留在当前页面</span></div><button type="submit" disabled={paidLocked || !draft.message.trim()}>发送需求给 Agent</button></form></section>
     <section className="website-section" aria-labelledby={`${prefix}-generate-title`}><h3 id={`${prefix}-generate-title`}>02 / 官网需求与公开素材</h3><div className="field"><label htmlFor={`${prefix}-brief`}>官网需求摘要（可编辑）</label><textarea id={`${prefix}-brief`} rows={6} maxLength={3000} value={draft.brief} disabled={inputLocked} onChange={event => updateDraft({ ...draft, brief: event.target.value, confirmed: false })} /><p className="micro">{draft.brief.length} / 3000 · 摘要可描述展示方式，不应替代真实餐厅资料。点击生成后提交此摘要及选择。</p></div><div className="row-heading"><h3>选择已上传素材</h3><button type="button" className="text-button" disabled={inputLocked || assetsLoading} onClick={() => setAssetReload(value => value + 1)}>刷新可选素材</button></div><p className="micro">最多读取 100 份素材，最多选择 8 份；菜单原文件和 Logo 各最多 1 份。只使用当前餐厅已上传且可用的文件，没有示例图片。</p>{assetsLoading && <p className="micro loading-text" role="status">正在分页读取全部可选素材…</p>}<ErrorMessage error={assetsError} readOnly />{!assetsLoading && !assetsError && assets.length === 0 && <p className="micro website-empty">暂无可选素材。可先到“菜单与图片”上传；也可以不选素材生成纯文字网页。</p>}<ul className="website-asset-options">{assets.map(asset => <li key={asset.id}><label className="check-field"><input type="checkbox" checked={draft.assetIds.includes(asset.id)} disabled={inputLocked || assetsLoading || (!draft.assetIds.includes(asset.id) && (draft.assetIds.length >= 8 || (['menu_source', 'logo'].includes(asset.kind) && assets.some(chosen => chosen.kind === asset.kind && draft.assetIds.includes(chosen.id)))))} onChange={event => updateDraft({ ...draft, confirmed: false, assetIds: event.target.checked ? [...draft.assetIds, asset.id] : draft.assetIds.filter(id => id !== asset.id) })} /><span className="asset-filename">{asset.original_filename}<span className="micro">{kindLabels[asset.kind]} · {asset.mime_type === 'application/pdf' ? 'PDF 原文件（只下载）' : '已上传图片'}</span></span></label></li>)}</ul><p className="micro" aria-live="polite">已选 {draft.assetIds.length} / 8{assetsTruncated ? ' · 仅显示前 100 份可用范围内的素材' : ''}</p>{missingSelected && !assetsLoading && <p className="notice">部分已选素材不在最新可用列表中，请清除选择并重新核对。<button type="button" className="text-button" disabled={inputLocked} onClick={() => updateDraft({ ...draft, assetIds: draft.assetIds.filter(id => assets.some(asset => asset.id === id)), confirmed: false })}>移除不可用选择</button></p>}<label className="check-field website-confirmation"><input type="checkbox" checked={factsConfirmed} disabled={inputLocked} onChange={event => { confirmedRevisionRef.current = restaurant.revision; updateDraft({ ...draft, confirmed: event.target.checked }); }} /><span>确认资料真实且所选图片/菜单允许公开<span className="muted">（必填；人工确认的菜单文字与所选原文件将按上述说明公开）</span></span></label><div className="save-row"><button type="button" className="primary-button" disabled={generationBlockers.length > 0} aria-describedby={`${prefix}-generation-blockers`} onClick={generate}>确认资料并生成网页</button><button type="button" className="text-button" disabled={inputLocked || !dirty} onClick={() => updateDraft({ ...draft, brief: saved.brief, assetIds: [...saved.assetIds], message: '', confirmed: false })}>放弃未提交的网页修改</button></div><div id={`${prefix}-generation-blockers`} className="micro website-generation-blockers" aria-live="polite">{generationBlockers.length > 0 ? <><p>暂不能生成，请处理以下全部阻止原因</p><ul>{generationBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul></> : <p>当前生成条件已满足。点击会提交新的建站任务，可能产生多轮模型费用；不会自动生成或发布。</p>}</div></section>
     {!!state?.jobs.length && <section className="website-section"><h3>任务记录</h3><p className="micro">仅展示最近20条；接口可返回更多任务。失败任务不会自动重试或换键新生成。</p><ul className="website-jobs">{[...state.jobs].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, 20).map(job => {
-      const diagnostics = job.progress?.diagnostics ?? [...(job.trace ?? [])].reverse().find(item => item.diagnostics.length)?.diagnostics ?? [];
+      const diagnostics = job.progress?.diagnostics ?? [...(job.trace ?? [])].reverse().find(item => !item.model_call && !/model|模型/i.test(item.action) && item.diagnostics.length)?.diagnostics ?? [];
       return <li key={job.id}><span>{job.kind === 'chat' ? '需求讨论' : '网页生成'} · {jobLabels[job.status]}</span><time className="micro" dateTime={job.created_at}>{formatTime(job.created_at)}</time>
         {job.status === 'failed' && <div className="website-job-failure"><p>{websiteJobErrorMessage(job.error_code)}{job.error_code && <>（<code>{job.error_code}</code>）</>}</p>{diagnostics.length > 0 && <Diagnostics items={diagnostics} />}</div>}
       </li>;

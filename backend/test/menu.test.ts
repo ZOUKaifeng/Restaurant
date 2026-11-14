@@ -22,7 +22,7 @@ import type { Config } from '../src/config.js';
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: Config, root: string;
 let sequence = 0;
-const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 const password = '菜单测试-Valid-Password-2026!';
 interface Actor { email: string; cookie: string; csrf: string }
 function testUrl(key: string, role: string): string {

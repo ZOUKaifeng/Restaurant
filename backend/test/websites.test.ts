@@ -20,7 +20,7 @@ import type { WebsiteAgentObservation, WebsiteToolCall } from '../src/website-ag
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: WebsiteRuntimeConfig, root: string;
 let sequence = 0;
-const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_model_calls,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 const password = '网页测试-Valid-Password-2026!';
 interface Actor { email: string; cookie: string; csrf: string }
 function testUrl(key: string, role: string): string {
@@ -53,7 +53,7 @@ before(async () => {
   owner = createPool(migrationDatabaseUrl); pool = createPool(databaseUrl);
   await migrate(owner, 'restaurant_test_app');
   // 本测试支持尚未修改迁移清单的分工状态；使用同一迁移锁及校验表，不修改 migrate 文件。
-  for (const version of ['004_websites', '006_website_react']) {
+  for (const version of ['004_websites', '006_website_react', '007_website_usage']) {
     const sql = await readFile(new URL(`../migrations/${version}.sql`, import.meta.url), 'utf8');
     const checksum = createHash('sha256').update(sql).digest('hex');
     await transaction(owner, async db => {
@@ -509,15 +509,27 @@ test('真实 PostgreSQL ReAct 逐步进度跨连接持久，私有草稿不返�
         extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining FROM website_jobs WHERE id=$1`, [jobId])).rows[0];
       assert.equal(stored.status, 'running'); assert.deepEqual(stored.progress, observation.progress);
       assert.deepEqual(stored.trace.at(-1), observation.event); assert.ok(stored.trace.length <= 40);
-      assert.deepEqual(stored.usage, { model_calls: observation.progress.model_calls, total_tokens: observation.progress.total_tokens });
-      assert.ok(stored.remaining > 80 && stored.remaining <= 12 * 60);
+      assert.deepEqual(stored.usage, { model_calls: observation.progress.model_calls, total_tokens: observation.progress.total_tokens,
+        prompt_tokens: observation.progress.prompt_tokens, completion_tokens: observation.progress.completion_tokens,
+        elapsed_ms: observation.progress.elapsed_ms, unknown_usage_calls: observation.event.action === 'model_call_started' ? 1 : 0 });
+      assert.ok(stored.remaining > 80 && stored.remaining <= 190);
+      if (observation.event.model_call) {
+        const metric = (await owner.query('SELECT * FROM website_model_calls WHERE job_id=$1 AND call_index=$2', [jobId, observation.event.model_call.index])).rows[0];
+        assert.equal(metric.status, observation.event.model_call.status);
+        assert.equal(metric.total_tokens, observation.event.model_call.total_tokens === null ? null : String(observation.event.model_call.total_tokens));
+      }
       if (observation.draft) assert.deepEqual(stored.agent_draft, observation.draft);
       const view = await request('GET', path(rid, `/jobs/${jobId}`), alice);
       assert.equal(view.statusCode, 200, view.body); assert.deepEqual(view.json().progress, stored.progress);
       assert.deepEqual(view.json().trace, stored.trace);
       assert.ok(!view.body.includes('不允许') && !view.body.includes('html_body'));
       if (observation.event.action === 'model_call_started' && calls === 0) {
-        await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=lease_expires_at+interval '1 minute' WHERE id=$1", [jobId]), { code: '23514' });
+        await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=clock_timestamp()+interval '48 hours' WHERE id=$1", [jobId]), { code: '23514' });
+        await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=clock_timestamp()+interval '30 seconds' WHERE id=$1", [jobId]), { code: '23514' });
+        const before = (await owner.query('SELECT lease_token,lease_expires_at FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+        await owner.query("UPDATE website_jobs SET lease_expires_at=clock_timestamp()+interval '185 seconds' WHERE id=$1", [jobId]);
+        const heartbeat = (await owner.query('SELECT lease_token,lease_expires_at FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+        assert.equal(heartbeat.lease_token, before.lease_token); assert.ok(heartbeat.lease_expires_at >= before.lease_expires_at);
         await assert.rejects(owner.query('UPDATE website_jobs SET lease_token=$2 WHERE id=$1', [jobId, randomUUID()]), { code: '23514' });
         await assert.rejects(owner.query("UPDATE website_jobs SET input='{}' WHERE id=$1", [jobId]), { code: '23514' });
         await assert.rejects(owner.query("UPDATE website_jobs SET created_at=created_at+interval '1 second' WHERE id=$1", [jobId]), { code: '23514' });
@@ -603,4 +615,275 @@ test('真实 PostgreSQL ReAct 最终 checksum 仍验证，损坏结果不写入�
   assert.equal(stored.status, 'failed'); assert.equal(stored.error_code, 'WEBSITE_CHECKSUM_INVALID');
   assert.equal(stored.progress.phase, 'failed'); assert.deepEqual(stored.progress.diagnostics, []);
   assert.equal((await owner.query('SELECT id FROM website_versions WHERE restaurant_id=$1', [rid])).rowCount, 0);
+});
+
+async function usage(rid: string, jobId: string, who: Actor) {
+  const response = await request('GET', path(rid, `/jobs/${jobId}/usage`), who);
+  assert.equal(response.statusCode, 200, response.body);
+  assert.ok(!response.body.includes('runner_token'));
+  return response.json();
+}
+function cancel(rid: string, jobId: string, who: Actor) {
+  return request('POST', path(rid, `/jobs/${jobId}/cancel`), who, { confirmed: true });
+}
+
+test('真实 PostgreSQL 完整调用历史超过 trace 40 与累计 60k，安全返回数值及不可重写账单', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('用量测试禁止真实模型网络请求'));
+  const alice = await actor('website.metrics.history@restaurant.example'), rid = await restaurant(alice, '完整计量餐厅');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let calls = 0;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, observe, async () => {
+    const tool_calls = ++calls <= 45 ? [nativeCall('read_context')] : [nativeCall('update_plan', reactPlan('completed')),
+      nativeCall('write_draft', reactDraft), nativeCall('validate_draft'), nativeCall('finish')];
+    assert.ok(calls <= 46);
+    return { message: { role: 'assistant', content: null, tool_calls }, usage: { prompt_tokens: 2000, completion_tokens: 1000, total_tokens: 3000 } };
+  }) };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 46);
+  const result = await usage(rid, jobId, alice);
+  assert.equal(result.calls.length, 46); assert.equal(result.unknown_usage_calls, 0);
+  assert.deepEqual(result.totals, { prompt_tokens: 92000, completion_tokens: 46000, total_tokens: 138000 });
+  assert.deepEqual(result.calls.map((call: { index: number }) => call.index), Array.from({ length: 46 }, (_, index) => index + 1));
+  for (const call of result.calls) {
+    assert.equal(call.status, 'completed'); assert.equal(call.prompt_tokens, 2000); assert.equal(call.completion_tokens, 1000);
+    assert.equal(call.total_tokens, 3000); assert.ok(Number.isSafeInteger(call.elapsed_ms) && call.elapsed_ms >= 0);
+    assert.equal(call.error_code, null);
+    assert.deepEqual(Object.keys(call).sort(), ['index', 'status', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'elapsed_ms', 'error_code'].sort());
+  }
+  const stored = (await owner.query('SELECT status,trace,usage FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.equal(stored.status, 'succeeded'); assert.equal(stored.trace.length, 40);
+  assert.equal(stored.usage.model_calls, 46); assert.equal(stored.usage.total_tokens, 138000);
+  await assert.rejects(owner.query("UPDATE website_model_calls SET status='failed',error_code='AI_TIMEOUT' WHERE job_id=$1 AND call_index=1", [jobId]), { code: '23514' });
+  await assert.rejects(pool.query('UPDATE website_model_calls SET runner_token=$2 WHERE job_id=$1', [jobId, randomUUID()]), { code: '42501' });
+  await assert.rejects(pool.query('DELETE FROM website_model_calls WHERE job_id=$1', [jobId]), { code: '42501' });
+  await assert.rejects(owner.query('DELETE FROM website_model_calls WHERE job_id=$1', [jobId]), { code: '23514' });
+  const finished = await cancel(rid, jobId, alice); assert.equal(finished.statusCode, 409); assert.equal(finished.json().code, 'JOB_ALREADY_FINISHED');
+  assert.equal(await runWebsiteJobs(pool, config, client), 0);
+});
+
+test('真实 PostgreSQL 网络失败未知用量为 NULL，附有效账单的失败仍计费，真实零不算未知', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('失败计量测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.failure@restaurant.example');
+  for (const known of [false, true]) {
+    const rid = await restaurant(alice, known ? '失败附账单店' : '网络未知店');
+    const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+    const jobId = accepted.json().job_id;
+    let calls = 0;
+    const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, observe, async () => {
+      if (++calls === 1) return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('read_context')] },
+        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } };
+      throw Object.assign(new Error('绝不能保存提供方正文或秘密'), { status: 504,
+        ...(known ? { usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } } : {}) });
+    }) };
+    assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 2);
+    const result = await usage(rid, jobId, alice);
+    assert.equal(result.calls.length, 2); assert.equal(result.calls[0].status, 'completed'); assert.equal(result.calls[0].total_tokens, 0);
+    const failed = result.calls[1]; assert.equal(failed.status, 'failed'); assert.equal(failed.error_code, 'AI_TIMEOUT');
+    assert.equal(failed.prompt_tokens, known ? 11 : null); assert.equal(failed.completion_tokens, known ? 7 : null); assert.equal(failed.total_tokens, known ? 18 : null);
+    assert.equal(result.unknown_usage_calls, known ? 0 : 1);
+    assert.deepEqual(result.totals, known ? { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 } : { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+    const row = (await owner.query('SELECT status,error_code,usage FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+    assert.equal(row.status, 'failed'); assert.equal(row.error_code, 'AI_TIMEOUT'); assert.equal(row.usage.unknown_usage_calls, known ? 0 : 1);
+    assert.equal((await cancel(rid, jobId, alice)).statusCode, 409);
+    assert.equal(await runWebsiteJobs(pool, config, client), 0);
+  }
+});
+
+test('真实 PostgreSQL queued 取消授权、CSRF、确认和幂等审计，不触发提供方', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('取消测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.cancelqueued@restaurant.example'), bob = await actor('website.metrics.cancelother@restaurant.example');
+  const rid = await restaurant(alice, '队列取消店'), otherRid = await restaurant(bob, '其它取消店'), sameRid = await restaurant(alice, '同商家其它店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  assert.equal((await request('GET', path(rid, `/jobs/${jobId}/usage`))).statusCode, 401);
+  assert.equal((await request('GET', path(rid, `/jobs/${jobId}/usage`), bob)).statusCode, 404);
+  assert.equal((await request('GET', path(otherRid, `/jobs/${jobId}/usage`), bob)).statusCode, 404);
+  assert.equal((await request('GET', path(sameRid, `/jobs/${jobId}/usage`), alice)).statusCode, 404);
+  assert.equal((await cancel(rid, jobId, bob)).statusCode, 404); assert.equal((await cancel(sameRid, jobId, alice)).statusCode, 404);
+  assert.equal((await cancel(rid, jobId, { ...alice, csrf: '' })).statusCode, 403);
+  assert.equal((await request('POST', path(rid, `/jobs/${jobId}/cancel`), alice, { confirmed: false })).statusCode, 422);
+  assert.equal((await request('POST', path(rid, `/jobs/${jobId}/cancel`), alice, { confirmed: true, unknown: true })).statusCode, 422);
+  assert.equal((await request('POST', path(rid, `/jobs/${jobId}/cancel`), alice, { confirmed: true }, { origin: 'https://evil.example' })).statusCode, 403);
+  assert.equal((await owner.query('SELECT status FROM website_jobs WHERE id=$1', [jobId])).rows[0].status, 'queued');
+  const first = await cancel(rid, jobId, alice); assert.equal(first.statusCode, 200, first.body);
+  assert.deepEqual(first.json(), { job_id: jobId, status: 'failed' });
+  assert.equal((await request('GET', path(rid, `/jobs/${jobId}`), alice)).json().progress.phase, 'failed');
+  assert.deepEqual((await cancel(rid, jobId, alice)).json(), first.json());
+  const result = await usage(rid, jobId, alice); assert.deepEqual(result.calls, []); assert.equal(result.unknown_usage_calls, 0);
+  assert.deepEqual(result.totals, { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+  assert.equal((await owner.query("SELECT id FROM audit_logs WHERE entity_id=$1 AND action='website_job_failed'", [jobId])).rowCount, 1);
+  assert.equal(await runWebsiteJobs(pool, config, { ...fixtureClient, generate: async () => assert.fail('已取消队列不得发出模型请求') }), 0);
+});
+
+test('真实 PostgreSQL 活跃请求取消后补记原始账单，但不复活、不覆盖进度、不写 HTML 且释放引用', { timeout: 15000 }, async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('活跃取消测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.cancelactive@restaurant.example'), rid = await restaurant(alice, '活跃取消店');
+  const bytes = await sharp({ create: { width: 6, height: 6, channels: 3, background: '#456789' } }).png().toBuffer();
+  const uploaded = await request('POST', `/restaurants/${rid}/assets?kind=logo&original_filename=logo.png&rights_confirmed=true`, alice, bytes,
+    { 'content-type': 'image/png', 'idempotency-key': id('upload') });
+  assert.equal(uploaded.statusCode, 201); const aid = uploaded.json().id;
+  const accepted = await generation(rid, alice, [aid]); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let ready!: () => void, release!: () => void, calls = 0;
+  const entered = new Promise<void>(resolve => { ready = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, observe, async () => {
+    calls++; ready(); await gate;
+    return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('write_draft', reactDraft)] },
+      usage: { prompt_tokens: 32900, completion_tokens: 59, total_tokens: 32959 } };
+  }) };
+  const running = runWebsiteJobs(pool, config, client);
+  let canceled: Record<string, unknown> | undefined;
+  try {
+    await entered;
+    const before = await usage(rid, jobId, alice);
+    assert.equal(before.calls[0].status, 'started'); assert.equal(before.calls[0].total_tokens, null); assert.equal(before.unknown_usage_calls, 1);
+    const response = await cancel(rid, jobId, alice); assert.equal(response.statusCode, 200, response.body);
+    canceled = (await owner.query('SELECT status,error_code,progress,trace,agent_draft,usage,lease_token,lease_expires_at FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+    assert.equal(canceled!.status, 'failed'); assert.equal(canceled!.error_code, 'AGENT_CANCELLED');
+    assert.equal(canceled!.lease_token, null); assert.equal(canceled!.lease_expires_at, null);
+    assert.equal((await owner.query('SELECT id FROM asset_references WHERE resource_id=$1', [jobId])).rowCount, 0);
+  } finally { release(); }
+  assert.equal(await running, 1); assert.equal(calls, 1);
+  const saved = (await owner.query('SELECT status,error_code,progress,trace,agent_draft,usage,lease_token,lease_expires_at FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.deepEqual(saved, canceled);
+  const result = await usage(rid, jobId, alice);
+  assert.equal(result.calls.length, 1); assert.equal(result.calls[0].status, 'completed'); assert.equal(result.calls[0].error_code, null);
+  assert.deepEqual(result.totals, { prompt_tokens: 32900, completion_tokens: 59, total_tokens: 32959 }); assert.equal(result.unknown_usage_calls, 0);
+  assert.equal((await owner.query('SELECT id FROM website_versions WHERE restaurant_id=$1', [rid])).rowCount, 0);
+  assert.equal((await owner.query("SELECT id FROM audit_logs WHERE entity_id=$1 AND action='website_job_failed'", [jobId])).rowCount, 1);
+  assert.equal((await cancel(rid, jobId, alice)).statusCode, 200);
+  assert.equal((await request('GET', `/restaurants/${rid}/assets/${aid}`, alice)).json().can_delete, true);
+  assert.equal(await runWebsiteJobs(pool, config, client), 0);
+});
+
+test('真实 PostgreSQL 请求中账号暂停仍保留账单，拒绝业务结果和后续计费调用', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('暂停补账测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.suspended@restaurant.example'), rid = await restaurant(alice, '暂停补账店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id, userId = (await owner.query('SELECT requesting_user_id FROM website_jobs WHERE id=$1', [jobId])).rows[0].requesting_user_id;
+  let calls = 0;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, observe, async () => {
+    calls++;
+    await owner.query("UPDATE users SET status='suspended' WHERE id=$1", [userId]);
+    return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('write_draft', reactDraft)] },
+      usage: { prompt_tokens: 100, completion_tokens: 23, total_tokens: 123 } };
+  }) };
+  try {
+    assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 1);
+    const job = (await owner.query('SELECT status,error_code,agent_draft,progress FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+    assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'WEBSITE_CONTEXT_REVOKED'); assert.equal(job.agent_draft, null); assert.equal(job.progress.phase, 'failed');
+    const call = (await owner.query('SELECT status,total_tokens FROM website_model_calls WHERE job_id=$1', [jobId])).rows[0];
+    assert.equal(call.status, 'completed'); assert.equal(call.total_tokens, '123');
+    assert.equal((await owner.query('SELECT id FROM website_versions WHERE restaurant_id=$1', [rid])).rowCount, 0);
+  } finally { await owner.query("UPDATE users SET status='active' WHERE id=$1", [userId]); }
+  assert.deepEqual((await usage(rid, jobId, alice)).totals, { prompt_tokens: 100, completion_tokens: 23, total_tokens: 123 });
+  assert.equal(await runWebsiteJobs(pool, config, client), 0);
+});
+
+test('真实 PostgreSQL 重放 started 拒绝再次调用提供方，错误码 AI_USAGE_INVALID 保留', async () => {
+  const alice = await actor('website.metrics.replay@restaurant.example'), rid = await restaurant(alice, '阻止调用重放店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let calls = 0;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, async observation => {
+    await observe(observation);
+    if (observation.event.action === 'model_call_started') await observe(observation);
+  }, async () => { calls++; assert.fail('重放 started 必须在提供方调用前停止'); }) };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 0);
+  const job = (await owner.query('SELECT status,error_code FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'AI_USAGE_INVALID');
+  const result = await usage(rid, jobId, alice); assert.equal(result.calls.length, 1); assert.equal(result.calls[0].status, 'failed'); assert.equal(result.unknown_usage_calls, 1);
+});
+
+test('真实 PostgreSQL 007 计量约束、原 runner、过期/聊天租约和 legacy 明确未知', async t => {
+  const alice = await actor('website.metrics.constraints@restaurant.example'), rid = await restaurant(alice, '约束计量店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, async observation => {
+    await observe(observation);
+    if (observation.event.action !== 'model_call_started') return;
+    const token = (await owner.query('SELECT lease_token FROM website_jobs WHERE id=$1', [jobId])).rows[0].lease_token;
+    await assert.rejects(owner.query("INSERT INTO website_model_calls(job_id,call_index,runner_token,status) VALUES($1,2,$2,'completed')", [jobId, token]), { code: '23514' });
+    await assert.rejects(owner.query("INSERT INTO website_model_calls(job_id,call_index,runner_token,status) VALUES($1,2,$2,'started')", [jobId, randomUUID()]), { code: '23514' });
+    await assert.rejects(owner.query("INSERT INTO website_model_calls(job_id,call_index,runner_token,status) VALUES($1,0,$2,'started')", [jobId, token]), { code: '23514' });
+    for (const [prompt, completion, total] of [[null, null, null], [1, null, 1], [-1, 2, 1], [1, 2, 4], ['9007199254740992', 0, '9007199254740992']]) {
+      await assert.rejects(owner.query("UPDATE website_model_calls SET status='completed',prompt_tokens=$2,completion_tokens=$3,total_tokens=$4 WHERE job_id=$1 AND call_index=1", [jobId, prompt, completion, total]), { code: '23514' });
+    }
+    await assert.rejects(owner.query('UPDATE website_model_calls SET runner_token=$2 WHERE job_id=$1 AND call_index=1', [jobId, randomUUID()]), { code: '23514' });
+  }, async () => ({ message: { role: 'assistant', content: null, tool_calls: [nativeCall('update_plan', reactPlan('completed')),
+    nativeCall('write_draft', reactDraft), nativeCall('validate_draft'), nativeCall('finish')] }, usage: { prompt_tokens: 1, completion_tokens: 2, total_tokens: 3 } })) };
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('约束测试禁止真实网络请求'));
+  assert.equal(await runWebsiteJobs(pool, config, client), 1);
+  assert.equal((await usage(rid, jobId, alice)).totals.total_tokens, 3);
+  const original = (await owner.query('SELECT * FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  const legacyId = id('wsj');
+  await owner.query(`INSERT INTO website_jobs(id,restaurant_id,requesting_user_id,kind,status,idempotency_key,request_fingerprint,input,snapshot,error_code,progress,usage)
+    VALUES($1,$2,$3,'generate','failed',$4,$5,$6,$7,'JOB_INTERRUPTED',$8,$9)`,
+  [legacyId, rid, original.requesting_user_id, id('legacy'), original.request_fingerprint, original.input, original.snapshot,
+    { phase: 'failed', model_calls: 5, total_tokens: 32959 }, { model_calls: 5, total_tokens: 32959 }]);
+  const legacy = await usage(rid, legacyId, alice);
+  assert.deepEqual(legacy.calls, []); assert.deepEqual(legacy.totals, { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 });
+  assert.equal(legacy.unknown_usage_calls, 5);
+  assert.deepEqual(legacy.legacy_summary, { model_calls: 5, total_tokens: 32959, prompt_tokens: null, completion_tokens: null });
+  const next = await generation(rid, alice); assert.equal(next.statusCode, 202);
+  const expiredId = next.json().job_id;
+  await owner.query("UPDATE website_jobs SET status='running',lease_token=$2,lease_expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", [expiredId, randomUUID()]);
+  await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=clock_timestamp()+interval '180 seconds' WHERE id=$1", [expiredId]), { code: '23514' });
+  assert.equal(await runWebsiteJobs(pool, config, client), 1);
+  assert.equal((await owner.query('SELECT error_code FROM website_jobs WHERE id=$1', [expiredId])).rows[0].error_code, 'JOB_INTERRUPTED');
+  const chat = await request('POST', path(rid, '/messages'), alice, { message: '询问风格', expected_revision: 0 }, { 'idempotency-key': id('chat') });
+  assert.equal(chat.statusCode, 202);
+  await owner.query("UPDATE website_jobs SET status='running',lease_token=$2,lease_expires_at=clock_timestamp()+interval '60 seconds' WHERE id=$1", [chat.json().job_id, randomUUID()]);
+  await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=clock_timestamp()+interval '180 seconds' WHERE id=$1", [chat.json().job_id]), { code: '23514' });
+  assert.equal((await cancel(rid, chat.json().job_id, alice)).statusCode, 200);
+});
+
+test('真实 PostgreSQL 累计超出 JS 安全整数拒绝返回伪数值，仍保留逐次已知账单', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('安全整数测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.safeinteger@restaurant.example'), rid = await restaurant(alice, '数值边界店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let calls = 0;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, observe, async () => {
+    const total = ++calls === 1 ? Number.MAX_SAFE_INTEGER : 1;
+    return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('read_context')] },
+      usage: { prompt_tokens: total, completion_tokens: 0, total_tokens: total } };
+  }) };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 2);
+  const job = (await owner.query('SELECT status,error_code FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'AI_USAGE_INVALID');
+  const records = (await owner.query('SELECT status,total_tokens FROM website_model_calls WHERE job_id=$1 ORDER BY call_index', [jobId])).rows;
+  assert.deepEqual(records, [{ status: 'completed', total_tokens: String(Number.MAX_SAFE_INTEGER) }, { status: 'failed', total_tokens: '1' }]);
+  const response = await request('GET', path(rid, `/jobs/${jobId}/usage`), alice);
+  assert.equal(response.statusCode, 503); assert.equal(response.json().code, 'AI_USAGE_INVALID');
+  assert.equal(await runWebsiteJobs(pool, config, client), 0);
+});
+
+test('真实 PostgreSQL 调用账单与 progress 原子提交，存储失败重提同一观察不重发网络', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('原子观察测试禁止真实网络请求'));
+  const alice = await actor('website.metrics.atomic@restaurant.example'), rid = await restaurant(alice, '原子账单店');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let calls = 0, checked = false;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, async observation => {
+    if (observation.event.action === 'model_call_completed') {
+      const before = (await owner.query('SELECT progress,trace,usage FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+      await owner.query('REVOKE UPDATE(usage) ON website_jobs FROM restaurant_test_app');
+      try {
+        await assert.rejects(observe(observation), { code: '42501' });
+        const call = (await owner.query('SELECT status,total_tokens FROM website_model_calls WHERE job_id=$1 AND call_index=1', [jobId])).rows[0];
+        assert.deepEqual(call, { status: 'started', total_tokens: null });
+        assert.deepEqual((await owner.query('SELECT progress,trace,usage FROM website_jobs WHERE id=$1', [jobId])).rows[0], before);
+        checked = true;
+      } finally { await owner.query('GRANT UPDATE(usage) ON website_jobs TO restaurant_test_app'); }
+    }
+    await observe(observation);
+  }, async () => {
+    calls++;
+    return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('update_plan', reactPlan('completed')),
+      nativeCall('write_draft', reactDraft), nativeCall('validate_draft'), nativeCall('finish')] }, usage: { prompt_tokens: 100, completion_tokens: 23, total_tokens: 123 } };
+  }) };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 1); assert.equal(checked, true);
+  assert.deepEqual((await usage(rid, jobId, alice)).totals, { prompt_tokens: 100, completion_tokens: 23, total_tokens: 123 });
+  assert.equal((await owner.query('SELECT status FROM website_jobs WHERE id=$1', [jobId])).rows[0].status, 'succeeded');
 });

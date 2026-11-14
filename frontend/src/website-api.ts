@@ -1,8 +1,9 @@
 import { ApiError, getCsrfToken, notifySessionExpired, refreshCsrf } from './api';
 import type { ApiErrorBody } from './types';
 import type {
-  WebsiteAccepted, WebsiteDiagnostic, WebsiteGenerateInput, WebsiteJob, WebsiteMessageInput, WebsitePreview,
-  WebsitePreviewAsset, WebsiteProgress, WebsitePublication, WebsitePublishInput, WebsiteState, WebsiteTrace, WebsiteVersion,
+  WebsiteAccepted, WebsiteCancelInput, WebsiteCancelled, WebsiteDiagnostic, WebsiteGenerateInput, WebsiteJob,
+  WebsiteMessageInput, WebsiteModelCall, WebsitePreview, WebsitePreviewAsset, WebsiteProgress, WebsitePublication,
+  WebsitePublishInput, WebsiteState, WebsiteTrace, WebsiteUsage, WebsiteVersion,
 } from './website-types';
 
 const idPattern = /^[A-Za-z0-9_-]{16,64}$/;
@@ -34,6 +35,10 @@ function ids(value: unknown): string[] {
 function basePath(restaurantId: string) {
   if (!idPattern.test(restaurantId)) throw new ApiError(400, 'REQUEST_INVALID');
   return `/api/v1/restaurants/${restaurantId}/website`;
+}
+function jobPath(restaurantId: string, jobId: string) {
+  if (!idPattern.test(jobId)) throw new ApiError(400, 'REQUEST_INVALID');
+  return `${basePath(restaurantId)}/jobs/${jobId}`;
 }
 function versionPath(restaurantId: string, versionId: string) {
   if (!idPattern.test(versionId)) throw new ApiError(400, 'REQUEST_INVALID');
@@ -74,10 +79,47 @@ function cappedText(value: unknown, maximum: number): string {
   if (result.length > maximum) throw invalid();
   return result;
 }
-function boundedCount(value: unknown, maximum: number): number {
-  const result = revision(value);
-  if (result > maximum) throw invalid();
-  return result;
+function nullableCount(value: unknown): number | null { return value === null ? null : revision(value); }
+function readModelCall(value: unknown): WebsiteModelCall {
+  const data = record(value);
+  if (!['started', 'completed', 'failed'].includes(text(data.status))) throw invalid();
+  return {
+    index: revision(data.index), status: data.status as WebsiteModelCall['status'],
+    prompt_tokens: nullableCount(data.prompt_tokens), completion_tokens: nullableCount(data.completion_tokens),
+    total_tokens: nullableCount(data.total_tokens), elapsed_ms: nullableCount(data.elapsed_ms),
+    ...(data.error_code === undefined ? {} : { error_code: data.error_code === null ? null : cappedText(data.error_code, 128) }),
+  };
+}
+function readUsage(value: unknown, jobId: string): WebsiteUsage {
+  const data = record(value);
+  if (identifier(data.job_id) !== jobId || !Array.isArray(data.calls)) throw invalid();
+  const calls = data.calls.map(value => {
+    const item = readModelCall(value);
+    if (item.error_code === undefined) throw invalid();
+    return { ...item, error_code: item.error_code };
+  });
+  if (new Set(calls.map(item => item.index)).size !== calls.length) throw invalid();
+  const totalsData = record(data.totals);
+  const totals = {
+    prompt_tokens: revision(totalsData.prompt_tokens), completion_tokens: revision(totalsData.completion_tokens),
+    total_tokens: revision(totalsData.total_tokens),
+  };
+  const unknownUsageCalls = revision(data.unknown_usage_calls);
+  let legacySummary: WebsiteUsage['legacy_summary'];
+  if (data.legacy_summary !== undefined) {
+    const legacy = record(data.legacy_summary);
+    if (calls.length !== 0 || legacy.prompt_tokens !== null || legacy.completion_tokens !== null
+      || totals.prompt_tokens !== 0 || totals.completion_tokens !== 0 || totals.total_tokens !== 0) throw invalid();
+    legacySummary = {
+      model_calls: revision(legacy.model_calls), total_tokens: nullableCount(legacy.total_tokens),
+      prompt_tokens: null, completion_tokens: null,
+    };
+    if (unknownUsageCalls !== legacySummary.model_calls) throw invalid();
+  } else if (unknownUsageCalls > calls.length) throw invalid();
+  return {
+    job_id: jobId, calls, totals, unknown_usage_calls: unknownUsageCalls,
+    ...(legacySummary === undefined ? {} : { legacy_summary: legacySummary }),
+  };
 }
 function readDiagnostics(value: unknown): WebsiteDiagnostic[] {
   if (!Array.isArray(value) || value.length > 20) throw invalid();
@@ -102,8 +144,11 @@ function readProgress(value: unknown): WebsiteProgress | null {
   });
   if (new Set(plan.map(item => item.id)).size !== plan.length) throw invalid();
   return {
-    phase: data.phase as WebsiteProgress['phase'], round: boundedCount(data.round, 4),
-    model_calls: boundedCount(data.model_calls, 12), total_tokens: revision(data.total_tokens),
+    phase: data.phase as WebsiteProgress['phase'], round: revision(data.round),
+    model_calls: revision(data.model_calls), total_tokens: revision(data.total_tokens),
+    ...(data.prompt_tokens === undefined ? {} : { prompt_tokens: revision(data.prompt_tokens) }),
+    ...(data.completion_tokens === undefined ? {} : { completion_tokens: revision(data.completion_tokens) }),
+    ...(data.elapsed_ms === undefined ? {} : { elapsed_ms: revision(data.elapsed_ms) }),
     plan, diagnostics: readDiagnostics(data.diagnostics),
   };
 }
@@ -114,8 +159,9 @@ function readTrace(value: unknown): WebsiteTrace[] {
     const item = record(value);
     if (!['ok', 'error'].includes(text(item.status))) throw invalid();
     return {
-      action: cappedText(item.action, 128), status: item.status as WebsiteTrace['status'], round: boundedCount(item.round, 4),
+      action: cappedText(item.action, 128), status: item.status as WebsiteTrace['status'], round: revision(item.round),
       message: cappedText(item.message, 2000), diagnostics: readDiagnostics(item.diagnostics),
+      ...(item.model_call === undefined ? {} : { model_call: readModelCall(item.model_call) }),
     };
   });
 }
@@ -186,7 +232,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 async function request<T>(path: string, read: (response: Response) => Promise<T>, options: {
-  signal?: AbortSignal; body?: unknown; key?: string; expectedStatus: number; accept?: string;
+  signal?: AbortSignal; body?: unknown; key?: string; csrfOnly?: boolean; expectedStatus: number; accept?: string;
 }): Promise<T> {
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -196,11 +242,11 @@ async function request<T>(path: string, read: (response: Response) => Promise<T>
   try {
     const headers = new Headers({ Accept: options.accept ?? 'application/json' });
     if (options.body !== undefined) {
-      if (!options.key || !/^[A-Za-z0-9_-]{16,128}$/.test(options.key)) throw new ApiError(400, 'REQUEST_INVALID');
+      if (!options.csrfOnly && (!options.key || !/^[A-Za-z0-9_-]{16,128}$/.test(options.key))) throw new ApiError(400, 'REQUEST_INVALID');
       await abortable(refreshCsrf(), controller.signal);
       headers.set('X-CSRF-Token', getCsrfToken());
       headers.set('Content-Type', 'application/json');
-      headers.set('Idempotency-Key', options.key);
+      if (options.key) headers.set('Idempotency-Key', options.key);
     }
     if (controller.signal.aborted) throw new DOMException('请求已取消', 'AbortError');
     const response = await fetch(path, {
@@ -209,10 +255,13 @@ async function request<T>(path: string, read: (response: Response) => Promise<T>
       body: options.body === undefined ? undefined : JSON.stringify(options.body), signal: controller.signal,
     });
     if (!response.ok) {
+      if (response.status === 401) {
+        notifySessionExpired();
+        throw new ApiError(401, 'SESSION_EXPIRED');
+      }
       const value: unknown = await response.json().catch(() => undefined);
       const body = value && typeof value === 'object' ? value as Partial<ApiErrorBody> : {};
       const retry = response.headers.get('Retry-After');
-      if (response.status === 401) notifySessionExpired();
       throw new ApiError(response.status, typeof body.code === 'string' ? body.code : 'REQUEST_FAILED', [], retry && /^\d{1,6}$/.test(retry) ? Number(retry) : null);
     }
     if (response.status !== options.expectedStatus) throw invalid();
@@ -234,6 +283,16 @@ async function json(response: Response): Promise<unknown> {
 }
 export const websiteApi = {
   get: (restaurantId: string, signal?: AbortSignal) => request(basePath(restaurantId), async response => readState(await json(response), restaurantId), { expectedStatus: 200, signal }),
+  getUsage: (restaurantId: string, jobId: string, signal?: AbortSignal) => request(`${jobPath(restaurantId, jobId)}/usage`,
+    async response => readUsage(await json(response), jobId), { expectedStatus: 200, signal }),
+  cancel: (restaurantId: string, jobId: string, body: WebsiteCancelInput, signal?: AbortSignal) => {
+    if (body.confirmed !== true) throw new ApiError(422, 'REQUEST_INVALID');
+    return request(`${jobPath(restaurantId, jobId)}/cancel`, async (response): Promise<WebsiteCancelled> => {
+      const data = record(await json(response));
+      if (identifier(data.job_id) !== jobId || data.status !== 'failed') throw invalid();
+      return { job_id: jobId, status: 'failed' };
+    }, { body: { confirmed: true }, csrfOnly: true, signal, expectedStatus: 200 });
+  },
   message: (restaurantId: string, body: WebsiteMessageInput, key: string, signal?: AbortSignal) => {
     if (!body.message.trim() || body.message.length > 2000 || !Number.isSafeInteger(body.expected_revision) || body.expected_revision < 0) throw new ApiError(422, 'REQUEST_INVALID');
     return request(`${basePath(restaurantId)}/messages`, async response => readAccepted(await json(response)), { body, key, signal, expectedStatus: 202 });
@@ -295,7 +354,8 @@ const errorMessages: Record<string, string> = {
   MODEL_OUTPUT_INVALID: '模型输出未通过安全或格式检查，请核对任务记录并调整需求。',
   JOB_INTERRUPTED: '后台任务被中断，请核对任务与版本记录后再发起新任务。',
   WEBSITE_JOB_BUSY: '当前已有网页后台任务，请等待完成后再发送需求或生成。',
-  WEBSITE_VERSION_LIMIT: '当前餐厅已达到网页版本数量上限，不能继续生成。请联系服务维护人员。',
+  WEBSITE_VERSION_LIMIT: '这是旧任务的版本限额错误，并非当前生成限制；请核对任务记录后手动决定是否重新生成。',
+  AGENT_CANCELLED: '你已确认停止本次生成；不会自动发布或重新生成，已发生的费用仍会累计。',
   WEBSITE_DAILY_LIMIT: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
   WEBSITE_SLUG_CONFLICT: '这个本地路径已被使用，请换一个路径后重新确认。',
   WEBSITE_SLUG_IMMUTABLE: '已发布的网站路径不可修改，请刷新并核对发布状态。',
@@ -329,11 +389,11 @@ const errorMessages: Record<string, string> = {
 };
 export function websiteErrorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return '操作未完成，请重新核对状态。';
-  if (Object.hasOwn(errorMessages, error.code)) return errorMessages[error.code];
   if (error.status === 401) return '会话已失效，请重新登录。原写请求不会自动重放。';
+  if (Object.hasOwn(errorMessages, error.code)) return errorMessages[error.code];
   if (error.status === 402) return '模型服务余额不足，本次操作未自动重试。请核对账户与任务记录后再手动决定。';
   if (error.status === 403) return '权限或安全校验失效，请核对账户后手动重试。';
-  if (error.status === 404) return '餐厅、网页版本或素材不存在，或不属于当前账户。';
+  if (error.status === 404) return '餐厅、任务、网页版本或素材不存在，或不属于当前账户。';
   if (error.status === 412 || error.status === 428) return errorMessages.REVISION_CONFLICT;
   if (error.status === 429) return '频率或每日配额受限；每账号每日合计最多 30 个建站任务 / 对话 / 识图，不是模型调用次数。请稍后手动再试。';
   if (error.status === 422) return errorMessages.REQUEST_INVALID;
@@ -342,8 +402,8 @@ export function websiteErrorMessage(error: unknown): string {
 }
 export function websiteJobErrorMessage(code: string | null): string {
   // 服务端 failed 是已知终态，不能套用网络提交“结果未知”的提示。
-  const reason = code && /(?:BUDGET|TOKEN|MODEL_CALL|REPAIR|ROUND).*(?:LIMIT|EXCEEDED|EXHAUSTED)/.test(code)
-    ? '已达到修复轮数或模型调用 / tokens 的预算上限，本次任务已终止。'
+  const reason = code && /(?:BUDGET|TOKEN|(?:MODEL_)?CALL|REPAIR|ROUND|ITERATION|DURATION|TIME).*(?:LIMIT|EXCEEDED|EXHAUSTED)/.test(code)
+    ? '这是旧任务的累计 tokens、调用或修复限额错误，并非当前调试模式的限制；旧任务不会自动恢复。'
     : code === 'REQUEST_TIMEOUT' ? '后台处理超时，已终止本次任务。'
       : code === 'NETWORK_ERROR' ? '后台连接模型服务失败。'
         : code === 'RESPONSE_INVALID' ? '后台服务响应未通过检查。'
