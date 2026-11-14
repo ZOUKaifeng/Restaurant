@@ -114,7 +114,7 @@ validate({ type: 'string', format: 'date-time' }, '2028-02-29T23:59:59+01:00');
 check(true, 'Accept actual leap day with explicit timezone');
 
 check(api.openapi === '3.1.0', 'OpenAPI 3.1');
-check(api['x-implementation-status'] === 'contract-only', 'Implementation status must remain honest');
+check(api['x-implementation-status'] === 'local-tested-not-production', 'Local tests must not imply completed production deployment');
 check(api.servers.every((x) => x.url === '/api/v1'), 'No fictional deployed API URL');
 walk(api);
 

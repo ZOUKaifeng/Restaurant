@@ -4,7 +4,7 @@
   "info": {
     "title": "Restaurant merchant core API",
     "version": "0.1.0",
-    "description": "首个业务闭环的接口契约建议：商家注册/验证/登录/建店/改资料。尚未实现后端、选技术栈或接通真实资源。建议同源/api/v1网关与安全Cookie，部署/认证方案须在实施前确认。示例均为合成数据，不是真实账户或凭据。"
+    "description": "首个业务闭环接口：商家注册/验证/登录/建店/改资料。React/Vite与Fastify/TypeScript、PostgreSQL及安全Cookie已确认，当前实现通过本机真实数据库和浏览器测试；SMTP实际送达、正式域名部署及整体生产验收尚未完成。相对/api/v1路径不表示已有线上服务。示例均为合成数据，不是真实账户或凭据。"
   },
   "servers": [
     {
@@ -2885,7 +2885,7 @@
       }
     }
   },
-  "x-implementation-status": "contract-only",
+  "x-implementation-status": "local-tested-not-production",
   "x-required-acceptance": [
     "注册/找回不泄露邮箱存在性，密码不明文存储",
     "邮箱未验证不能创建商家登录会话",

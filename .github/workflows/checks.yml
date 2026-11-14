@@ -1,0 +1,68 @@
+name: Merchant core checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  merchant-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-disposable-service-password
+        ports:
+          - 55439:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CI_DATABASE_ADMIN_URL: postgresql://postgres:ci-disposable-service-password@127.0.0.1:55439/postgres
+      CI_TEST_OWNER_PASSWORD: ci-disposable-owner-password
+      CI_TEST_APP_PASSWORD: ci-disposable-app-password
+      TEST_DATABASE_URL: postgresql://restaurant_test_app:ci-disposable-app-password@127.0.0.1:55439/restaurant_test
+      TEST_MIGRATION_DATABASE_URL: postgresql://restaurant_test_owner:ci-disposable-owner-password@127.0.0.1:55439/restaurant_test
+      APP_ORIGIN: https://localhost:5173
+      TOKEN_PEPPER: ci-only-pepper-not-for-real-accounts-2026
+      CURSOR_SECRET: ci-only-cursor-not-for-real-accounts-2026
+      OUTBOX_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000001
+      EMAIL_MODE: disabled
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.22.2
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+      - name: Install backend from lock
+        working-directory: backend
+        run: npm ci
+      - name: Install frontend from lock
+        working-directory: frontend
+        run: npm ci
+      - name: Validate contract
+        run: node backend/scripts/validate-contract.mjs
+      - name: Backend typecheck and build
+        working-directory: backend
+        run: npm run typecheck && npm run build
+      - name: Frontend typecheck and build
+        working-directory: frontend
+        run: npm run build
+      - name: Set up disposable real test database
+        working-directory: backend
+        run: node --import tsx test/setup-ci.ts
+      - name: Test backend against PostgreSQL
+        working-directory: backend
+        run: npm run test:ci
+      - name: Check production dependency advisories
+        run: npm audit --prefix backend --omit=dev && npm audit --prefix frontend --omit=dev

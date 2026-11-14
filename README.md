@@ -6,11 +6,15 @@ AI 餐厅建站与订桌平台。
 
 ## 当前状态
 
-当前仓库保存项目研究、数据设计与开发计划，尚未选择技术栈、实施应用或创建数据库。
+已确认并开始实现：React＋Vite＋TypeScript 前端，Fastify＋TypeScript 后端，PostgreSQL 16，邮箱密码与安全 Cookie 会话。
+
+当前已落地商家账户和餐厅草稿管理，使用独立的真实 PostgreSQL 开发/测试数据库；不是内存存储或模拟登录。菜单上传、Agent生成、餐厅发布、顾客预订与数据看板仍是后续任务。
+
+**尚未对真实商家开放生产服务：** SMTP、正式域名与部署、正式条款/隐私内容和告警均未完成。邮箱验证/改密任务真实落入outbox，但缺少发送服务时不会假称邮件已送达；自动化测试通过仅表示当前本地闭环已验证。
 
 用户已同意按业务闭环推进：先确定关键接口与技术栈，建设生产底座，逐模块接通真实前后端；不先批量实现所有表的通用 CRUD。
 
-开发清单：[TODO.md](TODO.md)。第1项已完成“商家账户＋餐厅资料”的接口契约和静态检查；下一步确定技术方案，再进入真实账户与餐厅闭环实现。接口定义完成不等于服务已运行。
+开发清单：[TODO.md](TODO.md)。当前账户、建店、资料/周营业时间的接口及页面已接通真实数据库；实时进度及未通过的生产验收仍逐项保留。详见[账户与餐厅闭环验收报告](outputs/商家账户与餐厅闭环验收-2026-11-14.html)。
 
 - [首个接口契约说明](outputs/商家账户与餐厅接口契约-v0.1.md)：14条路径、17个操作、固定输入输出、鉴权及并发规则。
 - [OpenAPI 3.1契约](backend/contracts/merchant-core.openapi.json)：机器可读，可供后续生成类型与接口文档。
@@ -23,16 +27,23 @@ AI 餐厅建站与订桌平台。
 ```text
 Restaurant/
 ├── backend/
-│   ├── contracts/
-│   │   └── merchant-core.openapi.json
-│   └── scripts/
-│       └── validate-contract.mjs
-├── outputs/             项目报告与设计文档
-├── TODO.md              开发任务与验收
-└── README.md            项目入口
+│   ├── src/             Fastify、认证、餐厅、邮件worker
+│   ├── migrations/      PostgreSQL迁移
+│   ├── contracts/       OpenAPI契约
+│   ├── scripts/         迁移、本地初始化、契约检查
+│   ├── test/            真实PG集成、测试夹具、恢复检查
+│   └── package.json     独立依赖与构建入口
+├── frontend/
+│   ├── src/             React账户和餐厅管理界面
+│   ├── test/            浏览器联调测试
+│   └── package.json     独立依赖与构建入口
+├── .github/workflows/   类型、构建、契约和真实PG测试门禁
+├── outputs/             报告和实际页面验收截图
+├── TODO.md
+└── README.md
 ```
 
-现有后端接口契约和验证代码已归入 `backend/`。业务服务器尚未实现，前端代码也尚未开始，因此当前没有伪造的后端入口或前端空壳；未来前端放独立的 `frontend/`，后端源码、迁移、测试和配置归 `backend/`，分别构建和部署。生成的餐厅HTML是发布产物，不是商家后台源码。
+前后端源码、依赖清单和构建入口分开；后端没有为每家商家生成独立业务服务器。生成餐厅HTML与正式发布仍未实现。
 
 后端静态检查可从仓库任意工作目录使用脚本路径运行，脚本按自身位置解析契约和文档，不依赖调用时的当前目录。
 
@@ -44,6 +55,51 @@ Restaurant/
 - “订餐”指订桌订位，不是菜品订单或外卖。
 - 商家在平台统一管理，不为每家餐厅生成独立后台。
 - 首版不做自动容量和桌位分配；预订的人工确认流程仍是待确认建议。
+
+## 本地运行与检查
+
+需要 Node.js 22.12–22.x、PostgreSQL 16 工具及 OpenSSL。独立源码使用相对导入，私有 `.env.local`、证书、数据库和任何密钥都不提交。
+
+新克隆、没有依赖目录时，分别安装：
+
+```sh
+npm --prefix backend ci
+npm --prefix frontend ci
+```
+
+当前机器的 `node_modules` 是通往隔离依赖目录的本地链接，不纳入 Git；不要对现有共享依赖链接执行会删除目录的清理操作。其它机器正常独立安装无需此链接。
+
+专用本机数据库初始化（首次运行生成私有开发配置；不扫描或修改其它数据库集群）：
+
+```sh
+node backend/scripts/setup-local.mjs
+npm --prefix backend run migrate
+```
+
+脚本默认查找 `/opt/homebrew/bin` 的 PostgreSQL 16；其它环境用 `PG_BIN_DIR` 指定真实工具目录。数据库只监听127.0.0.1:55439，开发库与测试库分开，应用与迁移角色分开；不启用trust认证。开发HTTPS证书为本地自签名证书，不安装全局信任、不能用作正式证书。
+
+分别在两个终端启动：
+
+```sh
+npm --prefix backend run dev
+npm --prefix frontend run dev
+```
+
+打开 `https://localhost:5173`。后端只监听本机4000，前端代理 `/api`，浏览器使用Secure、HttpOnly、SameSite Cookie。`EMAIL_MODE=disabled`只排队不发信；没有SMTP时不能让普通新用户绕过邮箱验证。
+
+检查与构建：
+
+```sh
+npm --prefix backend run contract
+npm --prefix backend run typecheck
+npm --prefix backend test
+npm --prefix backend run build
+npm --prefix frontend run build
+```
+
+后端测试必须使用专用真实测试库，启动前会核对库名/角色/端口，绝不清空开发库。浏览器测试需要已验证专用账户，通过私有环境提供 `E2E_EMAIL`、`E2E_PASSWORD`。`backend/test/prepare-ui.ts`仅用于指定本地测试环境，通过正常注册/验证接口准备夹具：它在测试代码中读取短期加密令牌，不是线上绕过入口，也不表示真实SMTP已验收。生产构建不包含test目录。
+
+生产运行使用构建结果 `backend/dist/src/index.js`，由受控部署注入配置；必须启用并配置SMTP和HTTPS，不允许运行时回退模拟DB或disabled邮件。数据库迁移另用独立角色运行，应用拒绝超级用户/DDL角色。公开网站、正式证书、反向代理、邮件签名与备份告警等须完成对应部署验收后才可上线。
 
 ## 开发路线
 
