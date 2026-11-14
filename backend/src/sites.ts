@@ -4,7 +4,26 @@ import type { Pool } from 'pg';
 import type { Config } from './config.js';
 import { createAssetStore } from './asset-storage.js';
 import { readPublicWebsite } from './website-access.js';
-import { assetPlaceholder, WEBSITE_CSP, WEBSITE_SANDBOX } from './website-html.js';
+import { WEBSITE_CSP, WEBSITE_SANDBOX } from './website-html.js';
+import { parse, serialize, type DefaultTreeAdapterMap } from 'parse5';
+import { ApiError } from './errors.js';
+
+export function rewritePublicAssetReferences(html: string, urls: ReadonlyMap<string, string>): string {
+  const doc = parse(html);
+  const visit = (node: DefaultTreeAdapterMap['node']) => {
+    if ('tagName' in node) for (const attr of node.attrs) {
+      if (!['src', 'href'].includes(attr.name)) continue;
+      const placeholder = /^__SITE_ASSET_(ast_[A-Za-z0-9_-]{24})__$/.exec(attr.value);
+      if (!placeholder) continue;
+      const url = urls.get(placeholder[1]!);
+      if (!url || !/^\/s\/[a-z0-9-]{3,50}\/media\/ast_[A-Za-z0-9_-]{24}\?version=wsv_[A-Za-z0-9_-]{24}$/.test(url)) throw new ApiError(503, 'WEBSITE_MANIFEST_INVALID');
+      attr.value = url;
+    }
+    if ('childNodes' in node) for (const child of node.childNodes) visit(child);
+  };
+  visit(doc);
+  return serialize(doc);
+}
 
 export function createSiteApp({ pool, config }: { pool: Pool; config: Config }) {
   if (config.nodeEnv === 'production' || !config.website || !['localhost', '127.0.0.1'].includes(new URL(config.website.publicOrigin).hostname)) throw new Error('本地站点服务不是公网部署，不允许生产模式');
@@ -29,9 +48,8 @@ export function createSiteApp({ pool, config }: { pool: Pool; config: Config }) 
     const { slug } = request.params as { slug: string };
     const site = await readPublicWebsite(pool, slug);
     if (!site) return reply.code(404).send('Website not found');
-    let html = site.html;
-    for (const asset of site.assets) html = html.replaceAll(assetPlaceholder(asset.id), `/s/${site.slug}/media/${asset.id}?version=${site.version_id}`);
-    if (/__SITE_ASSET_/.test(html)) return reply.code(503).send('Invalid website manifest');
+    const urls = new Map(site.assets.map(asset => [asset.id, `/s/${site.slug}/media/${asset.id}?version=${site.version_id}`]));
+    const html = rewritePublicAssetReferences(site.html, urls);
     return reply.type('text/html; charset=utf-8').send(html);
   });
   app.get('/s/:slug/media/:assetId', async (request, reply) => {

@@ -165,6 +165,24 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .website-section > h3 { margin-bottom: 12px; }
 .website-section > .field { margin-top: 22px; }
 .website-section > .micro { margin-bottom: 16px; }
+.website-agent-progress .row-heading { gap: 12px; flex-wrap: wrap; }
+.website-agent-plan, .website-agent-trace { margin: 16px 0; padding-left: 20px; font-size: 12px; }
+.website-agent-plan li { padding: 7px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.website-plan-status { display: inline-block; margin-right: 12px; color: var(--muted); font-size: 11px; }
+.website-plan-status.in_progress { color: var(--accent); }
+.website-agent-checks { margin-top: 18px; }
+.website-diagnostics { list-style: none; padding: 0; margin: 10px 0; font-size: 12px; }
+.website-diagnostics li { padding: 9px 12px; border-left: 1px solid var(--line); margin-bottom: 8px; overflow-wrap: anywhere; }
+.website-diagnostic-location { color: var(--muted); font-size: 11px; }
+.website-diagnostics p, .website-agent-trace p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.website-agent-details { padding-top: 14px; margin-top: 18px; border-top: 1px solid var(--line); font-size: 12px; }
+.website-agent-details summary { color: var(--accent); cursor: pointer; }
+.website-agent-details > p { margin-top: 10px; }
+.website-agent-trace > li { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.website-capabilities { margin: 18px 0; font-size: 11px; color: var(--muted); }
+.website-capabilities ul { margin: 6px 0; padding-left: 18px; }
+.website-generation-blockers { margin-top: 12px; padding: 10px 0 10px 12px; border-left: 1px solid var(--line); }
+.website-generation-blockers ul { margin: 5px 0 0; }
 .website-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px 28px; margin: 0 0 22px; }
 .website-facts > div { min-width: 0; }
 .website-facts > .wide { grid-column: 1 / -1; }
@@ -180,7 +198,9 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .website-asset-options .micro { display: block; margin-top: 4px; }
 .website-confirmation { margin-top: 22px; }
 .website-jobs li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 18px; padding: 14px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
-.website-jobs li > p { grid-column: 1 / -1; color: var(--muted); }
+.website-jobs li > p, .website-job-failure { grid-column: 1 / -1; color: var(--muted); }
+.website-job-failure { min-width: 0; overflow-wrap: anywhere; }
+.website-jobs .website-diagnostics li { display: block; padding: 9px 12px; border-bottom: 0; }
 .website-versions li { display: flex; justify-content: space-between; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); padding: 18px 0; }
 .website-versions li.selected { border-bottom-color: var(--accent); }
 .website-versions li > .text-button { display: grid; gap: 5px; text-align: left; flex: 1; min-width: 0; }

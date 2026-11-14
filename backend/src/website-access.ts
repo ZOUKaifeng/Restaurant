@@ -5,6 +5,7 @@ import type { Database } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import type { WebsiteSnapshot } from './website-html.js';
 import { readMenuDraft, menuItemCount } from './menu-access.js';
+import type { WebsiteAgentProgress, WebsiteAgentEvent } from './website-agent-types.js';
 
 export interface WebsiteSettings {
   apiKey?: string; baseUrl: string; model: string; publicOrigin: string;
@@ -16,6 +17,7 @@ export interface WebsiteAgent { id: string | null; revision: number; messages: W
 export interface WebsiteJobView {
   id: string; kind: 'chat' | 'generate'; status: 'queued' | 'running' | 'succeeded' | 'failed';
   error_code: string | null; result_version_id: string | null; created_at: string;
+  progress?: WebsiteAgentProgress | null; trace?: WebsiteAgentEvent[];
 }
 export type WebsiteJobRecord = Omit<WebsiteJobView, 'created_at'> & { created_at: Date };
 export interface WebsiteJob extends WebsiteJobRecord {
@@ -44,7 +46,7 @@ export interface WebsiteState {
 }
 export function websiteJobView(row: WebsiteJobRecord): WebsiteJobView {
   return { id: row.id, kind: row.kind, status: row.status, error_code: row.error_code,
-    result_version_id: row.result_version_id, created_at: row.created_at.toISOString() };
+    result_version_id: row.result_version_id, created_at: row.created_at.toISOString(), progress: row.progress ?? null, trace: row.trace ?? [] };
 }
 export interface WebsiteRestaurant {
   id: string; revision: number; status: 'draft' | 'active' | 'suspended' | 'archived';
@@ -53,7 +55,7 @@ export interface WebsiteRestaurant {
   country_code: string | null; contact_email: string | null; phone: string | null; timezone: string | null;
   currency_code: string | null; primary_locale: string;
 }
-export const websiteJobColumns = 'id,kind,status,error_code,result_version_id,created_at';
+export const websiteJobColumns = 'id,kind,status,error_code,result_version_id,created_at,progress,trace';
 export const websiteVersionColumns = 'id,restaurant_id,version_number,summary,created_at,checksum,asset_ids';
 export function websiteSettings(config: Config): WebsiteSettings | undefined {
   return (config as WebsiteRuntimeConfig).website;

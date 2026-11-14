@@ -1,8 +1,8 @@
 import { ApiError, getCsrfToken, notifySessionExpired, refreshCsrf } from './api';
 import type { ApiErrorBody } from './types';
 import type {
-  WebsiteAccepted, WebsiteGenerateInput, WebsiteJob, WebsiteMessageInput, WebsitePreview,
-  WebsitePreviewAsset, WebsitePublication, WebsitePublishInput, WebsiteState, WebsiteVersion,
+  WebsiteAccepted, WebsiteDiagnostic, WebsiteGenerateInput, WebsiteJob, WebsiteMessageInput, WebsitePreview,
+  WebsitePreviewAsset, WebsiteProgress, WebsitePublication, WebsitePublishInput, WebsiteState, WebsiteTrace, WebsiteVersion,
 } from './website-types';
 
 const idPattern = /^[A-Za-z0-9_-]{16,64}$/;
@@ -69,12 +69,63 @@ function readVersion(value: unknown, restaurantId: string): WebsiteVersion {
     summary: text(data.summary), created_at: time(data.created_at), checksum: text(data.checksum), asset_ids: ids(data.asset_ids),
   };
 }
+function cappedText(value: unknown, maximum: number): string {
+  const result = text(value);
+  if (result.length > maximum) throw invalid();
+  return result;
+}
+function boundedCount(value: unknown, maximum: number): number {
+  const result = revision(value);
+  if (result > maximum) throw invalid();
+  return result;
+}
+function readDiagnostics(value: unknown): WebsiteDiagnostic[] {
+  if (!Array.isArray(value) || value.length > 20) throw invalid();
+  return value.map(value => {
+    const item = record(value);
+    if (!['index.html', 'styles.css', 'assets', 'agent'].includes(text(item.file))) throw invalid();
+    return {
+      file: item.file as WebsiteDiagnostic['file'], line: revision(item.line), column: revision(item.column),
+      code: cappedText(item.code, 128), message: cappedText(item.message, 2000),
+    };
+  });
+}
+function readProgress(value: unknown): WebsiteProgress | null {
+  if (value === undefined || value === null) return null;
+  const data = record(value);
+  if (!['planning', 'writing', 'checking', 'repairing', 'ready', 'failed'].includes(text(data.phase))
+    || !Array.isArray(data.plan) || data.plan.length > 12) throw invalid();
+  const plan = data.plan.map((value): WebsiteProgress['plan'][number] => {
+    const item = record(value);
+    if (!['pending', 'in_progress', 'completed'].includes(text(item.status))) throw invalid();
+    return { id: cappedText(item.id, 128), title: cappedText(item.title, 500), status: item.status as WebsiteProgress['plan'][number]['status'] };
+  });
+  if (new Set(plan.map(item => item.id)).size !== plan.length) throw invalid();
+  return {
+    phase: data.phase as WebsiteProgress['phase'], round: boundedCount(data.round, 4),
+    model_calls: boundedCount(data.model_calls, 12), total_tokens: revision(data.total_tokens),
+    plan, diagnostics: readDiagnostics(data.diagnostics),
+  };
+}
+function readTrace(value: unknown): WebsiteTrace[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 40) throw invalid();
+  return value.map(value => {
+    const item = record(value);
+    if (!['ok', 'error'].includes(text(item.status))) throw invalid();
+    return {
+      action: cappedText(item.action, 128), status: item.status as WebsiteTrace['status'], round: boundedCount(item.round, 4),
+      message: cappedText(item.message, 2000), diagnostics: readDiagnostics(item.diagnostics),
+    };
+  });
+}
 function readJob(value: unknown): WebsiteJob {
   const data = record(value);
   if (!['chat', 'generate'].includes(text(data.kind)) || !statuses.includes(text(data.status))) throw invalid();
   return {
     id: identifier(data.id), kind: data.kind as WebsiteJob['kind'], status: data.status as WebsiteJob['status'],
-    error_code: data.error_code === null ? null : text(data.error_code), result_version_id: nullableId(data.result_version_id), created_at: time(data.created_at),
+    error_code: data.error_code === null ? null : cappedText(data.error_code, 128), result_version_id: nullableId(data.result_version_id), created_at: time(data.created_at),
+    progress: readProgress(data.progress), trace: readTrace(data.trace),
   };
 }
 function readState(value: unknown, restaurantId: string): WebsiteState {
@@ -227,7 +278,8 @@ export function rewriteWebsitePreview(html: string, urls: ReadonlyMap<string, st
         if (!url || !url.startsWith('blob:') || /["'<>\s]/.test(url)) throw invalid();
         return `${space}${attribute}="${url}"`;
       }));
-  if (/__SITE_ASSET_/.test(rewritten) || !/<head(?:\s[^>]*)?>/i.test(rewritten)) throw invalid();
+  // 已知资源属性均在上面替换或报错；普通文本出现相同前缀不是素材错误。
+  if (!/<head(?:\s[^>]*)?>/i.test(rewritten)) throw invalid();
   const csp = "default-src 'none'; img-src blob: data:; style-src 'unsafe-inline'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'; script-src 'none'";
   // 在服务端安全文档的 head 起始处加同等或更严格的约束，后续策略不能放宽。
   return rewritten.replace(/<head(?:\s[^>]*)?>/i, match => `${match}<meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="referrer" content="no-referrer">`);
@@ -244,7 +296,7 @@ const errorMessages: Record<string, string> = {
   JOB_INTERRUPTED: '后台任务被中断，请核对任务与版本记录后再发起新任务。',
   WEBSITE_JOB_BUSY: '当前已有网页后台任务，请等待完成后再发送需求或生成。',
   WEBSITE_VERSION_LIMIT: '当前餐厅已达到网页版本数量上限，不能继续生成。请联系服务维护人员。',
-  WEBSITE_DAILY_LIMIT: '已达到每日 30 次 Agent 调用上限，请明日再试。',
+  WEBSITE_DAILY_LIMIT: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
   WEBSITE_SLUG_CONFLICT: '这个本地路径已被使用，请换一个路径后重新确认。',
   WEBSITE_SLUG_IMMUTABLE: '已发布的网站路径不可修改，请刷新并核对发布状态。',
   PUBLICATION_REVISION_CONFLICT: '发布版本已在其他窗口变化，未自动重放。请重新读取当前发布状态，再确认发布或回滚。',
@@ -255,8 +307,8 @@ const errorMessages: Record<string, string> = {
   WEBSITE_HTML_INVALID: '网页文档未通过安全或格式校验，不能使用该文档预览或发布。',
   WEBSITE_HTML_TOO_LARGE: '网页文档超过大小上限，请简化需求后重新确认生成。',
   WEBSITE_CONTEXT_REVOKED: '任务使用的餐厅资料或素材授权已失效，请刷新资料与素材，重新确认公开权限。',
-  AI_DAILY_LIMIT_EXCEEDED: '已达到每日 30 次 Agent 调用上限，请明日再试。',
-  WEBSITE_DAILY_LIMIT_EXCEEDED: '已达到每日 30 次 Agent 调用上限，请明日再试。',
+  AI_DAILY_LIMIT_EXCEEDED: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
+  WEBSITE_DAILY_LIMIT_EXCEEDED: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
   AI_RATE_LIMITED: '模型调用受限，请等待后手动重试；不会自动重复付费调用。',
   JOB_ALREADY_ACTIVE: '当前已有后台任务，请等待完成后再发送需求或生成。',
   JOB_IN_PROGRESS: '当前已有后台任务，请等待完成后再发送需求或生成。',
@@ -279,22 +331,25 @@ export function websiteErrorMessage(error: unknown): string {
   if (!(error instanceof ApiError)) return '操作未完成，请重新核对状态。';
   if (Object.hasOwn(errorMessages, error.code)) return errorMessages[error.code];
   if (error.status === 401) return '会话已失效，请重新登录。原写请求不会自动重放。';
+  if (error.status === 402) return '模型服务余额不足，本次操作未自动重试。请核对账户与任务记录后再手动决定。';
   if (error.status === 403) return '权限或安全校验失效，请核对账户后手动重试。';
   if (error.status === 404) return '餐厅、网页版本或素材不存在，或不属于当前账户。';
   if (error.status === 412 || error.status === 428) return errorMessages.REVISION_CONFLICT;
-  if (error.status === 429) return '调用频率或每日配额受限（每日最多 30 次）。请稍后再试。';
+  if (error.status === 429) return '频率或每日配额受限；每账号每日合计最多 30 个建站任务 / 对话 / 识图，不是模型调用次数。请稍后手动再试。';
   if (error.status === 422) return errorMessages.REQUEST_INVALID;
   if (error.status >= 500) return '服务暂时不可用，操作结果尚未确认。请核查任务与发布记录。';
   return '操作未完成，请核对任务、版本和输入后再确认。';
 }
 export function websiteJobErrorMessage(code: string | null): string {
   // 服务端 failed 是已知终态，不能套用网络提交“结果未知”的提示。
-  const reason = code === 'REQUEST_TIMEOUT' ? '后台处理超时。'
-    : code === 'NETWORK_ERROR' ? '后台连接模型服务失败。'
-      : code === 'RESPONSE_INVALID' ? '后台服务响应未通过检查。'
-        : code && Object.hasOwn(errorMessages, code) ? errorMessages[code]
-          : '请核对资料、需求与版本记录后再决定是否发起新任务。';
-  return `后台任务已失败，不会自动重试。${reason}`;
+  const reason = code && /(?:BUDGET|TOKEN|MODEL_CALL|REPAIR|ROUND).*(?:LIMIT|EXCEEDED|EXHAUSTED)/.test(code)
+    ? '已达到修复轮数或模型调用 / tokens 的预算上限，本次任务已终止。'
+    : code === 'REQUEST_TIMEOUT' ? '后台处理超时，已终止本次任务。'
+      : code === 'NETWORK_ERROR' ? '后台连接模型服务失败。'
+        : code === 'RESPONSE_INVALID' ? '后台服务响应未通过检查。'
+          : code && Object.hasOwn(errorMessages, code) ? errorMessages[code]
+            : '请核对资料、需求与版本记录后再决定是否发起新任务。';
+  return `本次Agent已停止，保留检查结果。${reason}`;
 }
 export function isWebsiteJobActive(job: WebsiteJob) { return job.status === 'queued' || job.status === 'running'; }
 export function isWebsiteWriteUncertain(error: unknown) {

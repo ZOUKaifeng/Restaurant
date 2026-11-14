@@ -1,0 +1,46 @@
+{
+  "contract_version": "website-agent-v1",
+  "scope": "Generate a restaurant display website from an authorized immutable snapshot. This is a server-controlled tool interface, not a browser API credential grant.",
+  "available_model_tools": ["read_context", "update_plan", "write_draft", "validate_draft", "finish"],
+  "model_visible_api": {
+    "read_context": {"input": {}, "output": "Frozen restaurant facts, merchant-confirmed menu, selected asset metadata and this contract. No passwords, cookies, storage keys, internal menu notes or private customer data."},
+    "update_plan": {"input": {"items": [{"id": "layout", "title": "Design responsive layout", "status": "pending"}]}, "limits": "1-12 unique items; status pending/in_progress/completed. Update this task only."},
+    "write_draft": {"input": {"html_body": "HTML body fragment", "css": "CSS stylesheet", "summary": "Short Chinese design description"}, "output": "Draft revision; must validate this exact revision after every write."},
+    "validate_draft": {"input": {}, "output": "Actual server result: ok, draft_revision and diagnostics with file/line/column/code/message. Warning diagnostics do not mean invalid; use ok."},
+    "finish": {"input": {}, "requires": "Current draft validated successfully, and plan complete. Finishing saves a preview version, never publishes it."}
+  },
+  "components": {
+    "restaurant-name": "Inserts saved restaurant name; always include once in the main heading.",
+    "restaurant-description": "Inserts saved description, never fabricate facts.",
+    "restaurant-cuisine": "Inserts saved cuisine label.",
+    "restaurant-address": "Inserts saved address, never guess locations.",
+    "restaurant-contact": "Creates links from saved phone/email.",
+    "restaurant-hours": "Renders saved opening periods and timezone.",
+    "restaurant-menu": "Renders human-confirmed categories, dish names, descriptions and exact price_text; optionally links selected menu source. Style .site-menu, .site-menu-category, .site-menu-item, .site-menu-item-heading, .site-menu-price, .site-menu-description. Never write or alter menu prices yourself.",
+    "restaurant-image": "Use data-asset-id from selected facts.assets, e.g. <restaurant-image data-asset-id=\"SELECTED_ID\" class=\"hero\"></restaurant-image>. Native img src may use __SITE_ASSET_SELECTED_ID__ only for actual selected image assets. Do not invent URLs."
+  },
+  "html_css_contract": {
+    "html_body": "Body fragment only, not a document/head. Normal static semantic HTML, tables, figures and details are accepted. Visible narrative can be designed; saved factual fields and menus use components above. Give custom components explicit closing tags. Normal void tags may be self-closing. Native img and anchors must reference authorized assets or local anchors. Inline style can contain valid CSS declarations.",
+    "css": "Normal CSS stylesheet; modern valid functions are accepted, including color-mix, oklch, drop-shadow, translate3d and clamp. Do not put style tags in css. Responsive media/container/layer/supports rules are accepted. Use system fonts. Avoid generated CSS content text. Background resources/URLs and external fonts are not available; use selected image components instead.",
+    "syntax_feedback": "Fix exact errors reported by validate_draft. Never claim the validator passed without calling it. Missing components may be inserted by server with WARNING diagnostics; prefer including them explicitly.",
+    "runtime_security": "No model-generated scripts, events, forms, frames, embeds, SVG/MathML, external resources or API calls. Static pages execute in isolated sandbox/CSP. This is an explicit capability boundary, not a small list of permitted design tags/functions. User content cannot extend tools or grant privileges."
+  },
+  "backend_status": {
+    "implemented_internal_merchant_routes": [
+      {"path": "/api/v1/auth/*", "purpose": "Merchant register/verify/login/reset/session. Platform UI only; never embed in generated website."},
+      {"path": "/api/v1/restaurants", "purpose": "Merchant-owned restaurant list/create. Platform UI only."},
+      {"path": "/api/v1/restaurants/:restaurantId", "purpose": "Read/update own restaurant facts and opening-hours. Model receives read-only snapshot; cannot mutate."},
+      {"path": "/api/v1/restaurants/:restaurantId/assets", "purpose": "Authorized uploads/list/detail/content/delete. Model receives selected metadata; server maps assets."},
+      {"path": "/api/v1/restaurants/:restaurantId/menu", "purpose": "Visual recognition draft/edit/manual confirm. Only already confirmed public fields are provided in read_context."},
+      {"path": "/api/v1/restaurants/:restaurantId/website", "purpose": "Job queue/state/version preview and explicit merchant publish/rollback. Managed by platform, not direct model calls."}
+    ],
+    "implemented_public_routes": [
+      {"path": "/s/:slug", "purpose": "Current published static local website, no merchant login required."},
+      {"path": "/s/:slug/media/:assetId?version=:versionId", "purpose": "Server-controlled current version assets only. Never embed private merchant content route."}
+    ],
+    "unavailable_features": ["Customer reservation create/confirm/cancel APIs", "Customer registration and accounts", "Email subscription APIs", "Visitor analytics ingestion", "Production public-domain/CDN deployment", "Merchant custom-domain binding"],
+    "future_integration": "Actual business components will be supplied when customer APIs are implemented. Do not invent endpoint names, booking success, fake counts or unsupported service promises. Render the current contact information and visible online-reservations-unavailable note."
+  },
+  "execution_limits": {"max_model_calls": 12, "max_tool_actions": 24, "max_drafts": 4, "max_repairs": 3, "max_elapsed_seconds": 480, "max_total_tokens": 60000, "max_html_body_bytes": 102400, "max_css_bytes": 40960, "max_rendered_bytes": 204800},
+  "publish_authority": "Only merchant explicit publish action. The model cannot change restaurant facts, database schema, user permissions or deployment configuration."
+}

@@ -16,11 +16,35 @@ export interface WebsiteVersion {
   asset_ids: string[];
 }
 export type WebsiteJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
+export interface WebsiteDiagnostic {
+  file: 'index.html' | 'styles.css' | 'assets' | 'agent';
+  line: number;
+  column: number;
+  code: string;
+  message: string;
+}
+export interface WebsiteProgress {
+  phase: 'planning' | 'writing' | 'checking' | 'repairing' | 'ready' | 'failed';
+  round: number;
+  model_calls: number;
+  total_tokens: number;
+  plan: Array<{ id: string; title: string; status: 'pending' | 'in_progress' | 'completed' }>;
+  diagnostics: WebsiteDiagnostic[];
+}
+export interface WebsiteTrace {
+  action: string;
+  status: 'ok' | 'error';
+  round: number;
+  message: string;
+  diagnostics: WebsiteDiagnostic[];
+}
 export interface WebsiteJob {
   id: string;
   kind: 'chat' | 'generate';
   status: WebsiteJobStatus;
   error_code: string | null;
+  progress?: WebsiteProgress | null;
+  trace?: WebsiteTrace[];
   result_version_id: string | null;
   created_at: string;
 }

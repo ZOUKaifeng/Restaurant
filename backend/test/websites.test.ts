@@ -15,6 +15,8 @@ import { registerWebsites } from '../src/website.js';
 import { createSiteApp } from '../src/sites.js';
 import { runWebsiteJobs, type WebsiteJobClient } from '../src/website-worker.js';
 import { readPublicWebsite, type WebsiteRuntimeConfig } from '../src/website-access.js';
+import { runWebsiteAgent } from '../src/website-react.js';
+import type { WebsiteAgentObservation, WebsiteToolCall } from '../src/website-agent-types.js';
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: WebsiteRuntimeConfig, root: string;
 let sequence = 0;
@@ -51,17 +53,19 @@ before(async () => {
   owner = createPool(migrationDatabaseUrl); pool = createPool(databaseUrl);
   await migrate(owner, 'restaurant_test_app');
   // 本测试支持尚未修改迁移清单的分工状态；使用同一迁移锁及校验表，不修改 migrate 文件。
-  const sql = await readFile(new URL('../migrations/004_websites.sql', import.meta.url), 'utf8');
-  const checksum = createHash('sha256').update(sql).digest('hex');
-  await transaction(owner, async db => {
-    await db.query("SELECT pg_advisory_xact_lock(hashtext('merchant-core-migrations'))");
-    const applied = (await db.query("SELECT checksum FROM schema_migrations WHERE version='004_websites'")).rows[0];
-    if (applied) assert.equal(applied.checksum, checksum);
-    else {
-      await db.query(sql);
-      await db.query("INSERT INTO schema_migrations(version,checksum) VALUES('004_websites',$1)", [checksum]);
-    }
-  });
+  for (const version of ['004_websites', '006_website_react']) {
+    const sql = await readFile(new URL(`../migrations/${version}.sql`, import.meta.url), 'utf8');
+    const checksum = createHash('sha256').update(sql).digest('hex');
+    await transaction(owner, async db => {
+      await db.query("SELECT pg_advisory_xact_lock(hashtext('merchant-core-migrations'))");
+      const applied = (await db.query('SELECT checksum FROM schema_migrations WHERE version=$1', [version])).rows[0];
+      if (applied) assert.equal(applied.checksum, checksum);
+      else {
+        await db.query(sql);
+        await db.query('INSERT INTO schema_migrations(version,checksum) VALUES($1,$2)', [version, checksum]);
+      }
+    });
+  }
   await assertAppDatabase(pool);
   await owner.query(`TRUNCATE ${tables}`);
   app = await application();
@@ -96,6 +100,7 @@ async function request(method: HTTPMethods, path: string, actor?: Actor, payload
   assert.equal(response.headers['cache-control'], 'no-store');
   assert.ok(!response.body.includes(config.website!.apiKey!));
   assert.ok(!response.body.includes('storage_key') && !response.body.includes('lease_token') && !response.body.includes('request_fingerprint'));
+  assert.ok(!response.body.includes('agent_draft') && !response.body.includes('html_body'));
   return response;
 }
 async function actor(email: string): Promise<Actor> {
@@ -472,4 +477,130 @@ test('真实 PostgreSQL 网页任务、生成、预览和本地发布闭环', as
     await assert.rejects(pool.query("UPDATE website_jobs SET status='queued' WHERE restaurant_id=$1", [rid]), { code: '23514' });
     assert.equal((await request('DELETE', `/restaurants/${rid}/assets/${aid}`, alice, undefined, { 'if-match': `"asset-${aid}-v1"` })).statusCode, 409);
   });
+});
+
+function nativeCall(name: string, args: unknown = {}): WebsiteToolCall {
+  return { id: `call_${randomUUID().replaceAll('-', '')}`, type: 'function', function: { name, arguments: JSON.stringify(args) } };
+}
+const reactDraft = {
+  html_body: '<main><h1><restaurant-name></restaurant-name></h1><restaurant-description></restaurant-description><restaurant-address></restaurant-address><restaurant-contact></restaurant-contact><restaurant-hours></restaurant-hours><restaurant-menu></restaurant-menu></main>',
+  css: 'main{padding:2rem}', summary: '工具式生成页面',
+};
+const reactPlan = (status: string) => ({ items: [{ id: 'layout', title: '生成并真实校验', status }] });
+
+test('真实 PostgreSQL ReAct 逐步进度跨连接持久，私有草稿不返回 API，终态和租约不可篡改', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('进度测试禁止真实模型网络请求'));
+  const alice = await actor('website.react.progress@restaurant.example');
+  const rid = await restaurant(alice, '进度餐厅');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  const rounds = [
+    [nativeCall('update_plan', reactPlan('pending')), nativeCall('read_context'), nativeCall('write_draft', { ...reactDraft, html_body: '<main>\n<script>不允许</script></main>' }), nativeCall('validate_draft')],
+    [nativeCall('read_context'), nativeCall('write_draft', reactDraft), nativeCall('validate_draft'), nativeCall('update_plan', reactPlan('completed'))],
+    [nativeCall('finish')],
+  ];
+  const durable: WebsiteAgentObservation[] = []; let calls = 0;
+  const client: WebsiteJobClient = { ...fixtureClient,
+    generate: async () => assert.fail('注入 react 后不应执行单次 generate'),
+    react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, async observation => {
+      await observe(observation);
+      // 使用另一真实连接确认回调提交，不仅检查内存事件。
+      const stored = (await owner.query(`SELECT progress,trace,agent_draft,usage,status,
+        extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining FROM website_jobs WHERE id=$1`, [jobId])).rows[0];
+      assert.equal(stored.status, 'running'); assert.deepEqual(stored.progress, observation.progress);
+      assert.deepEqual(stored.trace.at(-1), observation.event); assert.ok(stored.trace.length <= 40);
+      assert.deepEqual(stored.usage, { model_calls: observation.progress.model_calls, total_tokens: observation.progress.total_tokens });
+      assert.ok(stored.remaining > 80 && stored.remaining <= 12 * 60);
+      if (observation.draft) assert.deepEqual(stored.agent_draft, observation.draft);
+      const view = await request('GET', path(rid, `/jobs/${jobId}`), alice);
+      assert.equal(view.statusCode, 200, view.body); assert.deepEqual(view.json().progress, stored.progress);
+      assert.deepEqual(view.json().trace, stored.trace);
+      assert.ok(!view.body.includes('不允许') && !view.body.includes('html_body'));
+      if (observation.event.action === 'model_call_started' && calls === 0) {
+        await assert.rejects(owner.query("UPDATE website_jobs SET lease_expires_at=lease_expires_at+interval '1 minute' WHERE id=$1", [jobId]), { code: '23514' });
+        await assert.rejects(owner.query('UPDATE website_jobs SET lease_token=$2 WHERE id=$1', [jobId, randomUUID()]), { code: '23514' });
+        await assert.rejects(owner.query("UPDATE website_jobs SET input='{}' WHERE id=$1", [jobId]), { code: '23514' });
+        await assert.rejects(owner.query("UPDATE website_jobs SET created_at=created_at+interval '1 second' WHERE id=$1", [jobId]), { code: '23514' });
+      }
+      durable.push(structuredClone(observation));
+    }, async () => {
+      assert.ok(calls < rounds.length);
+      return { message: { role: 'assistant', content: null, tool_calls: rounds[calls++]! }, usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } };
+    }),
+  };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 3);
+  const stored = (await owner.query('SELECT * FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.equal(stored.status, 'succeeded'); assert.equal(stored.progress.phase, 'ready');
+  assert.equal(stored.progress.total_tokens, 360); assert.equal(stored.lease_token, null); assert.equal(stored.lease_expires_at, null);
+  const phases = new Set(durable.map(observation => observation.progress.phase));
+  for (const phase of ['planning', 'writing', 'checking', 'repairing', 'ready'] as const) assert.ok(phases.has(phase));
+  const version = (await owner.query('SELECT html,checksum,usage FROM website_versions WHERE id=$1', [stored.result_version_id])).rows[0];
+  assert.equal(createHash('sha256').update(version.html).digest('hex'), version.checksum);
+  assert.deepEqual(version.usage, { prompt_tokens: 300, completion_tokens: 60, total_tokens: 360 });
+  assert.ok(!version.html.includes('<restaurant-name>') && version.html.includes('进度餐厅'));
+  const publicJob = await request('GET', path(rid, `/jobs/${jobId}`), alice);
+  assert.equal(publicJob.json().progress.phase, 'ready'); assert.ok(!publicJob.body.includes('agent_draft'));
+  assert.ok(!JSON.stringify((await state(rid, alice)).jobs).includes('html_body'));
+  await assert.rejects(pool.query("UPDATE website_jobs SET progress='{}' WHERE id=$1", [jobId]), { code: '23514' });
+  await assert.rejects(owner.query("UPDATE website_jobs SET trace='[]' WHERE id=$1", [jobId]), { code: '23514' });
+  assert.equal(await runWebsiteJobs(pool, config, client), 0);
+});
+
+test('真实 PostgreSQL 中途撤销 owner 权限：下次 observe 原子失败、保留诊断、释放引用且不再 external call', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('撤权测试禁止真实网络请求'));
+  const alice = await actor('website.react.revoked@restaurant.example'), rid = await restaurant(alice, '撤权进度餐厅');
+  const bytes = await sharp({ create: { width: 6, height: 6, channels: 3, background: '#456789' } }).png().toBuffer();
+  const uploaded = await request('POST', `/restaurants/${rid}/assets?kind=logo&original_filename=logo.png&rights_confirmed=true`, alice, bytes,
+    { 'content-type': 'image/png', 'idempotency-key': id('upload') });
+  assert.equal(uploaded.statusCode, 201); const aid = uploaded.json().id;
+  const accepted = await generation(rid, alice, [aid]); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  let calls = 0, lastDiagnostics: WebsiteAgentObservation['progress']['diagnostics'] = [];
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => runWebsiteAgent(value, brief, snapshot, async observation => {
+    if (observation.event.action === 'model_call_started' && calls === 1) {
+      await transaction(owner, async db => {
+        await db.query("SET LOCAL lock_timeout='500ms'");
+        const user = (await db.query('SELECT requesting_user_id FROM website_jobs WHERE id=$1', [jobId])).rows[0].requesting_user_id;
+        await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [user]);
+        await db.query('SELECT id FROM restaurants WHERE id=$1 FOR UPDATE', [rid]);
+        await db.query("UPDATE restaurant_members SET status='revoked' WHERE restaurant_id=$1 AND user_id=$2", [rid, user]);
+      });
+    }
+    await observe(observation);
+    if (observation.event.action === 'validate_draft') lastDiagnostics = structuredClone(observation.progress.diagnostics);
+  }, async () => {
+    calls++;
+    assert.equal(calls, 1, '撤权后的观察必须在任何下一次外部请求前阻断');
+    return { message: { role: 'assistant', content: null, tool_calls: [nativeCall('update_plan', reactPlan('pending')),
+      nativeCall('write_draft', { ...reactDraft, html_body: '<main><script>禁止</script></main>' }), nativeCall('validate_draft')] },
+    usage: { prompt_tokens: 30, completion_tokens: 10, total_tokens: 40 } };
+  }) };
+  try {
+    assert.equal(await runWebsiteJobs(pool, config, client), 1); assert.equal(calls, 1);
+    const stored = (await owner.query('SELECT * FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+    assert.equal(stored.status, 'failed'); assert.equal(stored.error_code, 'WEBSITE_CONTEXT_REVOKED');
+    assert.equal(stored.progress.phase, 'failed'); assert.ok(lastDiagnostics.length > 0);
+    assert.deepEqual(stored.progress.diagnostics, lastDiagnostics); assert.equal(stored.lease_token, null);
+    assert.equal((await owner.query('SELECT id FROM asset_references WHERE resource_id=$1', [jobId])).rowCount, 0);
+    assert.equal((await owner.query('SELECT id FROM website_versions WHERE restaurant_id=$1', [rid])).rowCount, 0);
+    assert.equal((await request('GET', path(rid, `/jobs/${jobId}`), alice)).statusCode, 404);
+    assert.equal(await runWebsiteJobs(pool, config, client), 0);
+  } finally { await owner.query("UPDATE restaurant_members SET status='active' WHERE restaurant_id=$1", [rid]); }
+});
+
+test('真实 PostgreSQL ReAct 最终 checksum 仍验证，损坏结果不写入版本且失败阶段不遗失校验诊断', async () => {
+  const alice = await actor('website.react.checksum@restaurant.example'), rid = await restaurant(alice, '校验和进度餐厅');
+  const accepted = await generation(rid, alice); assert.equal(accepted.statusCode, 202);
+  const jobId = accepted.json().job_id;
+  const client: WebsiteJobClient = { ...fixtureClient, react: async (value, brief, snapshot, observe) => {
+    const output = await runWebsiteAgent(value, brief, snapshot, observe, async () => ({ message: { role: 'assistant', content: null,
+      tool_calls: [nativeCall('update_plan', reactPlan('completed')), nativeCall('write_draft', reactDraft), nativeCall('validate_draft'), nativeCall('finish')] },
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } }));
+    return { ...output, checksum: '0'.repeat(64) };
+  } };
+  assert.equal(await runWebsiteJobs(pool, config, client), 1);
+  const stored = (await owner.query('SELECT status,error_code,progress FROM website_jobs WHERE id=$1', [jobId])).rows[0];
+  assert.equal(stored.status, 'failed'); assert.equal(stored.error_code, 'WEBSITE_CHECKSUM_INVALID');
+  assert.equal(stored.progress.phase, 'failed'); assert.deepEqual(stored.progress.diagnostics, []);
+  assert.equal((await owner.query('SELECT id FROM website_versions WHERE restaurant_id=$1', [rid])).rowCount, 0);
 });

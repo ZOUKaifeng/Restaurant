@@ -5,16 +5,20 @@ import { id, transaction } from './db.js';
 import { ApiError } from './errors.js';
 import { callWebsiteAgent, generateWebsite } from './deepseek.js';
 import { renderWebsite } from './website-html.js';
+import { runWebsiteAgent } from './website-react.js';
+import type { WebsiteAgentObservation } from './website-agent-types.js';
 import {
   requireWebsiteAI, verifyWebsiteVersion, websiteAudit, type WebsiteJob, type WebsiteMessage,
   type WebsiteVersion,
 } from './website-access.js';
 
-export interface WebsiteJobClient { chat: typeof callWebsiteAgent; generate: typeof generateWebsite }
-const actualClient: WebsiteJobClient = { chat: callWebsiteAgent, generate: generateWebsite };
-const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
-  'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'WEBSITE_HTML_INVALID',
-  'WEBSITE_HTML_TOO_LARGE', 'WEBSITE_CHECKSUM_INVALID', 'WEBSITE_MANIFEST_INVALID']);
+export interface WebsiteJobClient { chat: typeof callWebsiteAgent; generate: typeof generateWebsite; react?: typeof runWebsiteAgent }
+const actualClient: WebsiteJobClient = { chat: callWebsiteAgent, generate: generateWebsite, react: runWebsiteAgent };
+const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_CONFIGURATION_INVALID', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
+  'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'AI_USAGE_UNAVAILABLE', 'AI_OUTPUT_TRUNCATED', 'WEBSITE_HTML_INVALID',
+  'WEBSITE_HTML_TOO_LARGE', 'WEBSITE_CHECKSUM_INVALID', 'WEBSITE_MANIFEST_INVALID',
+  'AGENT_REPAIR_LIMIT', 'AGENT_TOKEN_LIMIT', 'AGENT_TIME_LIMIT', 'AGENT_STEP_LIMIT',
+  'WEBSITE_CONTEXT_REVOKED', 'JOB_INTERRUPTED']);
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object') {
     const value = error as { code?: unknown; status?: unknown; statusCode?: unknown };
@@ -37,6 +41,7 @@ async function lockWorkerContext(db: PoolClient, candidate: Pick<WebsiteJob, 're
 }
 async function failJob(db: PoolClient, job: WebsiteJob, code: string): Promise<void> {
   await db.query(`UPDATE website_jobs SET status='failed',error_code=$2,lease_token=NULL,lease_expires_at=NULL,
+    progress=CASE WHEN progress IS NULL THEN NULL ELSE jsonb_set(progress,'{phase}','"failed"'::jsonb) END,
     updated_at=clock_timestamp() WHERE id=$1`, [job.id, code]);
   // 与餐厅锁、失败状态及审计处在同一事务，只释放引用，不删除任何源文件。
   await db.query(`DELETE FROM asset_references WHERE restaurant_id=$1 AND purpose='website_job' AND resource_id=$2`, [job.restaurant_id, job.id]);
@@ -62,26 +67,70 @@ async function claimJob(pool: Pool): Promise<{ job?: WebsiteJob; consumed: boole
     }
     const token = randomUUID();
     const running = (await db.query<WebsiteJob>(`UPDATE website_jobs SET status='running',lease_token=$2,
-      lease_expires_at=clock_timestamp()+interval '3 minutes',updated_at=clock_timestamp() WHERE id=$1 RETURNING *`, [job.id, token])).rows[0]!;
+      lease_expires_at=clock_timestamp()+CASE WHEN kind='generate' THEN interval '12 minutes' ELSE interval '3 minutes' END,
+      updated_at=clock_timestamp() WHERE id=$1 RETURNING *`, [job.id, token])).rows[0]!;
     return { job: running, consumed: true };
   });
+}
+async function observeJob(pool: Pool, original: WebsiteJob, observation: WebsiteAgentObservation): Promise<void> {
+  const code = await transaction(pool, async db => {
+    const valid = await lockWorkerContext(db, original);
+    const job = (await db.query<WebsiteJob & { remaining: number }>(`SELECT *,
+      extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
+      FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
+    if (!job || job.status !== 'running' || job.lease_token !== original.lease_token) return 'JOB_INTERRUPTED';
+    if (!valid || job.remaining <= 0 || (observation.event.action === 'model_call_started' && job.remaining <= 80)) {
+      const reason = !valid ? 'WEBSITE_CONTEXT_REVOKED' : 'JOB_INTERRUPTED';
+      await failJob(db, job, reason);
+      // 必须提交失败状态及引用释放，不能在事务内部 throw 导致回滚。
+      return reason;
+    }
+    const progress = JSON.stringify(observation.progress), event = JSON.stringify(observation.event);
+    const draft = observation.draft === undefined ? null : JSON.stringify(observation.draft);
+    if (Buffer.byteLength(progress) > 64 * 1024 || Buffer.byteLength(event) > 24 * 1024 ||
+        (draft !== null && (Buffer.byteLength(draft) > 1024 * 1024 ||
+        Buffer.byteLength(observation.draft!.html_body) > 100 * 1024 || Buffer.byteLength(observation.draft!.css) > 40 * 1024 ||
+        Array.from(observation.draft!.summary).length > 800))) {
+      await failJob(db, job, 'AGENT_STEP_LIMIT');
+      return 'AGENT_STEP_LIMIT';
+    }
+    await db.query(`UPDATE website_jobs SET progress=$2::jsonb,
+      trace=COALESCE((SELECT jsonb_agg(value ORDER BY ordinality) FROM
+        jsonb_array_elements(trace || jsonb_build_array($3::jsonb)) WITH ORDINALITY AS events(value,ordinality)
+        WHERE ordinality>GREATEST(0,jsonb_array_length(trace)+1-40)), '[]'::jsonb),
+      agent_draft=CASE WHEN $4::jsonb IS NULL THEN agent_draft ELSE $4::jsonb END,
+      usage=$5::jsonb,updated_at=clock_timestamp() WHERE id=$1`,
+    [job.id, progress, event, draft, JSON.stringify({ model_calls: observation.progress.model_calls, total_tokens: observation.progress.total_tokens })]);
+    return undefined;
+  });
+  if (code) throw new ApiError(503, code);
 }
 type Result = { kind: 'chat'; reply: string; design_brief: string } | { kind: 'generate'; version: WebsiteVersion };
 function validText(value: unknown, max: number, empty = false): value is string {
   return typeof value === 'string' && (empty || Boolean(value.trim())) && !value.includes('\0') && Array.from(value).length <= max;
 }
-async function perform(config: Config, job: WebsiteJob, client: WebsiteJobClient): Promise<Result> {
+async function perform(config: Config, job: WebsiteJob, client: WebsiteJobClient, observe?: (obs: WebsiteAgentObservation) => Promise<void>): Promise<Result> {
   requireWebsiteAI(config);
   if (job.kind === 'chat') {
     const output = await client.chat(config, job.input.messages!.slice(-20), job.snapshot);
     if (!validText(output?.reply, 2000) || !validText(output?.design_brief, 3000, true)) throw new ApiError(503, 'AI_RESPONSE_INVALID');
     return { kind: 'chat', reply: output.reply, design_brief: output.design_brief };
   }
-  const output = await client.generate(config, job.input.brief!, job.snapshot);
-  if (!validText(output?.summary, 2000) || !validText(output?.model, 100) ||
+  // 旧单次生成仅服务于显式注入的历史 fixture；实际客户端始终执行 ReAct。
+  const output = client.react
+    ? await client.react(config, job.input.brief!, job.snapshot, observe!)
+    : await client.generate(config, job.input.brief!, job.snapshot);
+  if (!validText(output?.summary, client.react ? 800 : 2000) || !validText(output?.model, 100) ||
       typeof output?.html_body !== 'string' || typeof output?.css !== 'string') throw new ApiError(503, 'AI_RESPONSE_INVALID');
   let rendered: ReturnType<typeof renderWebsite>;
-  try { rendered = renderWebsite(output, job.snapshot); }
+  try {
+    if (client.react) {
+      if (!('html' in output) || !('checksum' in output) || typeof output.html !== 'string' || typeof output.checksum !== 'string') {
+        throw new ApiError(503, 'AI_RESPONSE_INVALID');
+      }
+      rendered = { html: output.html, checksum: output.checksum };
+    } else rendered = renderWebsite(output, job.snapshot);
+  }
   catch (error) {
     if (error instanceof ApiError && safeErrors.has(error.code)) throw error;
     throw new ApiError(503, 'WEBSITE_HTML_INVALID');
@@ -130,6 +179,7 @@ async function finishJob(pool: Pool, original: WebsiteJob, result?: Result, fail
       return;
     }
     await db.query(`UPDATE website_jobs SET status='succeeded',result_version_id=$2,lease_token=NULL,lease_expires_at=NULL,
+      progress=CASE WHEN progress IS NULL THEN NULL ELSE jsonb_set(progress,'{phase}','"ready"'::jsonb) END,
       updated_at=clock_timestamp() WHERE id=$1`, [job.id, versionId]);
   });
 }
@@ -146,7 +196,8 @@ export async function runWebsiteJobs(pool: Pool, config: Config, client: Website
     const claimed = await claimJob(pool);
     if (!claimed.job) return claimed.consumed ? 1 : 0;
     let result: Result | undefined, failure: string | undefined;
-    try { result = await perform(config, claimed.job, client); } catch (error) { failure = errorCode(error); }
+    try { result = await perform(config, claimed.job, client, observation => observeJob(pool, claimed.job!, observation)); }
+    catch (error) { failure = errorCode(error); }
     await finishJob(pool, claimed.job, result, failure);
     return 1;
   } finally {

@@ -1,0 +1,595 @@
+{
+  "sample_is_fictional": true,
+  "database_modified": false,
+  "public_deployed": false,
+  "model": "deepseek-flash",
+  "usage": {
+    "prompt_tokens": 37037,
+    "completion_tokens": 3350,
+    "total_tokens": 40387
+  },
+  "progress": {
+    "phase": "ready",
+    "round": 1,
+    "model_calls": 8,
+    "total_tokens": 40387,
+    "plan": [
+      {
+        "id": "layout",
+        "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+        "status": "completed"
+      },
+      {
+        "id": "content",
+        "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+        "status": "completed"
+      },
+      {
+        "id": "validate",
+        "title": "写稿并调用校验,按真实诊断修复",
+        "status": "completed"
+      },
+      {
+        "id": "finish",
+        "title": "计划全部完成后结束生成",
+        "status": "completed"
+      }
+    ],
+    "diagnostics": []
+  },
+  "trace": [
+    {
+      "progress": {
+        "phase": "planning",
+        "round": 0,
+        "model_calls": 1,
+        "total_tokens": 0,
+        "plan": [],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 0,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "planning",
+        "round": 0,
+        "model_calls": 1,
+        "total_tokens": 1134,
+        "plan": [],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "read_context",
+        "status": "ok",
+        "round": 0,
+        "message": "已读取冻结的真实资料和受控能力契约。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "planning",
+        "round": 0,
+        "model_calls": 2,
+        "total_tokens": 1134,
+        "plan": [],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 0,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "planning",
+        "round": 0,
+        "model_calls": 2,
+        "total_tokens": 4054,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "update_plan",
+        "status": "ok",
+        "round": 0,
+        "message": "已更新模型制定的计划。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "planning",
+        "round": 0,
+        "model_calls": 3,
+        "total_tokens": 4054,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 0,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "writing",
+        "round": 1,
+        "model_calls": 3,
+        "total_tokens": 9905,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "write_draft",
+        "status": "ok",
+        "round": 1,
+        "message": "虚拟草稿已保存，尚未校验或发布。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "writing",
+        "round": 1,
+        "model_calls": 4,
+        "total_tokens": 9905,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 1,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 4,
+        "total_tokens": 15529,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "validate_draft",
+        "status": "ok",
+        "round": 1,
+        "message": "当前草稿通过真实结构校验。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 5,
+        "total_tokens": 15529,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "in_progress"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "pending"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "pending"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "pending"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 1,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 5,
+        "total_tokens": 21688,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "in_progress"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "update_plan",
+        "status": "ok",
+        "round": 1,
+        "message": "已更新模型制定的计划。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 6,
+        "total_tokens": 21688,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "in_progress"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 1,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 6,
+        "total_tokens": 27934,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "in_progress"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "finish",
+        "status": "error",
+        "round": 1,
+        "message": "AGENT_PLAN_INCOMPLETE",
+        "diagnostics": [
+          {
+            "file": "agent",
+            "line": 1,
+            "column": 1,
+            "code": "AGENT_PLAN_INCOMPLETE",
+            "message": "工具请求未满足契约，请使用允许的工具和准确参数修正。"
+          }
+        ]
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 7,
+        "total_tokens": 27934,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "in_progress"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 1,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 7,
+        "total_tokens": 34147,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "completed"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "update_plan",
+        "status": "ok",
+        "round": 1,
+        "message": "已更新模型制定的计划。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "checking",
+        "round": 1,
+        "model_calls": 8,
+        "total_tokens": 34147,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "completed"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "model_call_started",
+        "status": "ok",
+        "round": 1,
+        "message": "正在调用模型选择下一步工具。",
+        "diagnostics": []
+      }
+    },
+    {
+      "progress": {
+        "phase": "ready",
+        "round": 1,
+        "model_calls": 8,
+        "total_tokens": 40387,
+        "plan": [
+          {
+            "id": "layout",
+            "title": "设计白底大留白细字体的页面结构与深绿点缀样式",
+            "status": "completed"
+          },
+          {
+            "id": "content",
+            "title": "用确定性组件呈现餐厅名称、简介、菜单与联系/预约说明",
+            "status": "completed"
+          },
+          {
+            "id": "validate",
+            "title": "写稿并调用校验,按真实诊断修复",
+            "status": "completed"
+          },
+          {
+            "id": "finish",
+            "title": "计划全部完成后结束生成",
+            "status": "completed"
+          }
+        ],
+        "diagnostics": []
+      },
+      "event": {
+        "action": "finish",
+        "status": "ok",
+        "round": 1,
+        "message": "计划完成且当前草稿已通过真实校验。",
+        "diagnostics": []
+      }
+    }
+  ]
+}
