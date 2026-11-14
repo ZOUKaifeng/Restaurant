@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>订位后端：数据库与接口交付说明</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#fff;color:#30352e;font:13px/1.85 system-ui,-apple-system,"PingFang SC",sans-serif}main{max-width:900px;margin:auto;padding:70px 28px 100px}h1{font-size:21px;font-weight:500;letter-spacing:.03em;margin:0 0 8px}h2{font-size:15px;font-weight:500;margin:0 0 14px}h3{font-size:13px;font-weight:500;margin:20px 0 8px}p{margin:0 0 12px}.meta{font-size:12px;color:#7a8176;margin-bottom:40px}section{border-top:1px solid #e4e8e1;padding:26px 0}code{font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:#4a5546;overflow-wrap:anywhere}table{width:100%;border-collapse:collapse;text-align:left}th{font-weight:500}th,td{border-bottom:1px solid #e4e8e1;padding:10px 8px;vertical-align:top}th:first-child,td:first-child{padding-left:0}ul,ol{padding-left:19px;margin:10px 0}li{margin:5px 0}.note{border-left:2px solid #a9b79d;padding-left:14px}.muted{color:#7a8176;font-size:12px}@media(max-width:620px){main{padding:40px 18px 70px}th,td{min-width:110px}.scroll{overflow-x:auto}}
+</style>
+</head>
+<body><main>
+<h1>订位后端：数据库与接口</h1>
+<p class="meta">2026-11-14 · 仅后端与真实数据库 · 未做前端页面、未配置真实邮件、未部署公网</p>
+<p class="note">订位按“提交申请 → 商家确认或拒绝”实现。<strong>提交不等于有位</strong>，没有容量、桌位或拼桌分配，也不承诺实时可订。本轮只交付数据库迁移、接口与工程验证。</p>
+
+<section><h2>01 / 新增与扩展的数据</h2>
+<ul>
+<li><code>reservations</code>：顾客姓名、邮箱或电话、人数、餐厅本地日期/时间、时区快照、换算后的UTC时刻、状态、revision、幂等键与公开编号。原始申请字段由触发器保护，不可改写。</li>
+<li><code>reservation_events</code>：只追加的变更历史，状态迁移与revision一一对应，同店同request_id唯一，用于幂等与审计。</li>
+<li><code>reservation_access_tokens</code>：顾客管理令牌只存HMAC摘要，一预订一活跃令牌，有效期120天，可由顾客查看和取消。</li>
+<li><code>email_outbox</code>扩展：允许游客预订通知（restaurant_id + reservation_id），模板增加received/confirmed/declined/cancelled，payload只允许固定摘要键。</li>
+<li><code>audit_logs</code>扩展：新增订位设置、商家决策和取消动作，实体类型增加reservation。</li>
+<li>餐厅已有<code>reservation_enabled</code>、<code>reservation_notice</code>、<code>privacy_notice_version</code>，008补齐应用角色更新权限。</li>
+</ul>
+<p class="muted">迁移文件：<a href="../backend/migrations/008_reservations.sql">008_reservations.sql</a>；未修改001–007已执行迁移。</p>
+</section>
+
+<section><h2>02 / 商家接口</h2>
+<div class="scroll"><table><thead><tr><th>接口</th><th>作用</th><th>保护</th></tr></thead><tbody>
+<tr><td><code>GET /api/v1/restaurants/:id/reservations/settings</code></td><td>读取是否开启、说明、隐私版本、时区与营业段</td><td>登录+归属</td></tr>
+<tr><td><code>PATCH .../reservations/settings</code></td><td>开启或停订；设置说明与隐私说明版本</td><td>登录+CSRF+revision</td></tr>
+<tr><td><code>GET .../reservations</code></td><td>按状态、本地日期筛选，游标分页</td><td>登录+归属</td></tr>
+<tr><td><code>GET .../reservations/:reservationId</code></td><td>详情与最近事件</td><td>登录+归属</td></tr>
+<tr><td><code>POST .../:reservationId/decision</code></td><td>确认或拒绝；拒绝必须给顾客可见原因</td><td>登录+CSRF+revision+幂等键</td></tr>
+<tr><td><code>POST .../:reservationId/cancel</code></td><td>商家取消pending或confirmed</td><td>登录+CSRF+revision+幂等键</td></tr>
+</tbody></table></div>
+<p class="muted">开启订位会递增餐厅revision，可能使命中中的网页生成确认失效，需要重新核对；这是既有“资料变更撤销确认”的一致行为。</p>
+</section>
+
+<section><h2>03 / 顾客接口</h2>
+<div class="scroll"><table><thead><tr><th>接口</th><th>作用</th><th>保护</th></tr></thead><tbody>
+<tr><td><code>POST /api/v1/public/restaurants/:slug/reservations</code></td><td>游客提交订位申请，返回一次管理令牌</td><td>营业/隐私/限流/幂等键/站点Origin</td></tr>
+<tr><td><code>GET /api/v1/public/reservations/:token</code></td><td>凭令牌查看状态与餐厅信息</td><td>高熵令牌，不可枚举</td></tr>
+<tr><td><code>POST /api/v1/public/reservations/:token/cancel</code></td><td>顾客取消pending或confirmed</td><td>令牌+revision，仅POST</td></tr>
+</tbody></table></div>
+<ul>
+<li>令牌只在创建响应返回一次，数据库只存摘要；不能凭邮箱、公开编号或自增ID查询。</li>
+<li>公开响应不回显完整邮箱与内部备注；商家响应含联系方式和内部备注，便于处理。</li>
+<li>不提供GET取消，避免邮件扫描器或预取改变状态。提交与取消均校验幂等/revision，重复提交不会生成第二笔。</li>
+<li>公开接口由站点同源调用；生产环境只接受站点origin，本地开发额外允许管理origin便于手测，未开放任意跨站来源。</li>
+</ul>
+</section>
+
+<section><h2>04 / 业务校验与状态机</h2>
+<ul>
+<li>只接受餐厅<code>accepts_requests=true</code>的营业段，含跨午夜；不存在的日期/时间、超出90天窗口、提前不足15分钟均拒绝。</li>
+<li>以餐厅时区把本地日期时间换算为唯一UTC时刻：夏令时跳过的本地时间直接拒绝；回拨造成两个可能时刻时要求明确偏移，不静默猜测。</li>
+<li>人数固定1–20（首版上限，可在后续迁移调整）；邮箱或电话至少一个；顾客备注最多1000字符。</li>
+<li>状态只能<code>pending → confirmed / declined / cancelled</code>，<code>confirmed → cancelled</code>；终态不可变；每次变更revision+1并由数据库触发器强制。</li>
+<li>商家决策与取消写事件、审计并在同一事务排队通知；邮件失败不影响订位状态，SMTP未配置时不发送、不伪造成功。</li>
+</ul>
+</section>
+
+<section><h2>05 / 工程验证</h2>
+<ul>
+<li>新增5项真实PostgreSQL回归：设置与开启门禁、公开提交与幂等、令牌查询与取消、商家决策幂等与跨店隔离、夏令时与原始事实保护。</li>
+<li>全量后端171项真实数据库测试通过，无跳过；<code>npm run build</code>通过；008已应用到本地开发库，未清理商家数据。</li>
+<li>覆盖：未开启/无接受段/旧revision、隐私版本不匹配、非法来源、跨店404、CSRF、非营业时间、人数上限、重复提交、同键不同内容、终态保护、GET不取消、触发器拒改原始字段。</li>
+</ul>
+</section>
+
+<section><h2>06 / 明确未完成</h2>
+<ul>
+<li>公开站点上的订位表单、商家管理后台的预订列表/处理页面；当前生成HTML禁止表单，不能把入口交给模型生成脚本，需平台固定组件。</li>
+<li>真实SMTP发送、退信/抑制/回执与发送失败的可追踪验收；现在只有事务内排队。</li>
+<li>正式域名、HTTPS、云端部署与公网访问；本地4174不能当作线上。</li>
+<li>顾客账号认领历史预订、改约、营销订阅与访问统计；首版未开放顾客自助改约。</li>
+</ul>
+</section>
+
+<section><h2>07 / 下一步建议</h2>
+<ol>
+<li>先用商家接口和公开接口完成端到端手测：开启→提交→商家确认→顾客令牌查看→取消。</li>
+<li>接入平台固定订位表单与商家预订页，不修改生成页面的安全边界。</li>
+<li>配置真实SMTP后验收通知与失败状态，再进入正式域名与云端发布。</li>
+</ol>
+</section>
+</main></body></html>

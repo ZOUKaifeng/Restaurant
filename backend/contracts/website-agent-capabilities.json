@@ -36,10 +36,12 @@
     ],
     "implemented_public_routes": [
       {"path": "/s/:slug", "purpose": "Current published static local website, no merchant login required."},
-      {"path": "/s/:slug/media/:assetId?version=:versionId", "purpose": "Server-controlled current version assets only. Never embed private merchant content route."}
+      {"path": "/s/:slug/media/:assetId?version=:versionId", "purpose": "Server-controlled current version assets only. Never embed private merchant content route."},
+      {"path": "/api/v1/public/restaurants/:slug/reservations", "purpose": "Guest reservation request through the platform fixed form. Platform-only; not a model tool."},
+      {"path": "/api/v1/public/reservations/:token", "purpose": "Guest status and cancel by one high-entropy manage token. Never enumerable by email, reference or reservation id."}
     ],
-    "unavailable_features": ["Customer reservation create/confirm/cancel APIs", "Customer registration and accounts", "Email subscription APIs", "Visitor analytics ingestion", "Production public-domain/CDN deployment", "Merchant custom-domain binding"],
-    "future_integration": "Actual business components will be supplied when customer APIs are implemented. Do not invent endpoint names, booking success, fake counts or unsupported service promises. Render the current contact information and visible online-reservations-unavailable note."
+    "unavailable_features": ["Customer reservation APIs are platform-only and not model-invokable", "Customer registration and accounts", "Email subscription APIs", "Visitor analytics ingestion", "Production public-domain/CDN deployment", "Merchant custom-domain binding"],
+    "future_integration": "Render current contact information and never promise booking success or invent form endpoints. The platform's fixed reservation component is connected separately, only when the merchant enables requests, and still requires merchant confirmation."
   },
   "execution_limits": {"mode": "usage_observation", "max_model_calls": null, "max_tool_actions": null, "max_drafts": null, "max_repairs": null, "max_elapsed_seconds": null, "max_total_tokens": null, "per_request_timeout_seconds": 75, "per_request_max_output_tokens": 16000, "max_html_body_bytes": 102400, "max_css_bytes": 40960, "max_rendered_bytes": 204800},
   "usage_observation": "No cumulative token/call/action/repair limit during this debugging phase. Continue until the draft is actually validated and plan finished, or the merchant cancels or an external/authentication error occurs. Actual prompt/completion/total tokens are recorded for every provider request. Minimize duplicate reads and plan updates; do not repeat finished work. Never claim success without validation.",

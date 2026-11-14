@@ -20,7 +20,7 @@ import type { WebsiteAgentObservation, WebsiteToolCall } from '../src/website-ag
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: WebsiteRuntimeConfig, root: string;
 let sequence = 0;
-const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_model_calls,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'menu_jobs,menu_drafts,website_publish_actions,website_publications,website_model_calls,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 const password = '网页测试-Valid-Password-2026!';
 interface Actor { email: string; cookie: string; csrf: string }
 function testUrl(key: string, role: string): string {

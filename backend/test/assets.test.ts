@@ -20,7 +20,7 @@ import { checksum, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES, validateUpload } from '../
 let app: FastifyInstance, pool: Pool, owner: Pool, config: Config, root: string;
 let sequence = 0;
 const password = '素材测试-Valid-Password-2026!';
-const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 interface Actor { cookie: string; csrf: string; email: string }
 function testUrl(key: string, role: string): string {
   const value = process.env[key];
