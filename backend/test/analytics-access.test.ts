@@ -303,9 +303,34 @@ test('复合版本FK及本地日期/有限UTC时刻/时区/固定口径约束生
     { occurred_at: 'infinity' }, { timezone_fallback: true }, { metric_version: 'v2' }, { namespace: 'unknown' },
     { event_type: 'subscribe' }, { dedupe_key: 'raw-request' }, { publication_revision: 0 },
   ]) await assert.rejects(rawEvent(patch), pgError('23514'));
-  // PG 中有效的 IANA 历史别名仍可冻结，但不存在的名字不能通过。
-  await rawEvent({ timezone_snapshot: 'US/Eastern' });
+  assert.equal((await owner.query('SELECT count(*) AS n FROM analytics_events')).rows[0].n, '0');
+  await rawEvent({ timezone_snapshot: 'America/New_York' });
   assert.equal((await owner.query('SELECT count(*) AS n FROM analytics_events')).rows[0].n, '1');
+});
+
+test('历史时区别名按当前 PG 目录接受或拒绝，事件和日汇总都不绕过时区守卫', async t => {
+  const timezone = 'US/Eastern';
+  // Trixie 的 tzdata-legacy 是可选包，不能假定每个 PG 安装都有历史别名。
+  const known = (await owner.query(`SELECT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_timezone_names WHERE name=$1) AS known`, [timezone])).rows[0].known;
+  assert.equal(typeof known, 'boolean');
+  t.diagnostic(`pg_timezone_names: US/Eastern=${known ? 'present' : 'absent'}`);
+  const daily = () => owner.query(`INSERT INTO analytics_daily
+    (restaurant_id,namespace,local_date,timezone_snapshot,timezone_fallback)
+    VALUES($1,'local_test','2024-06-01',$2,false)`, [fixture.context.restaurant_id, timezone]);
+  if (known) {
+    await rawEvent({ timezone_snapshot: timezone });
+    await daily();
+    const event = (await owner.query('SELECT timezone_snapshot,local_date::text FROM analytics_events')).rows;
+    assert.deepEqual(event, [{ timezone_snapshot: timezone, local_date: '2024-06-01' }]);
+    assert.deepEqual((await owner.query('SELECT timezone_snapshot FROM analytics_daily')).rows,
+      [{ timezone_snapshot: timezone }]);
+  } else {
+    await assert.rejects(rawEvent({ timezone_snapshot: timezone }), pgError('23514'));
+    await assert.rejects(daily(), pgError('23514'));
+    assert.equal((await owner.query('SELECT count(*) AS n FROM analytics_events')).rows[0].n, '0');
+    assert.equal((await owner.query('SELECT count(*) AS n FROM analytics_daily')).rows[0].n, '0');
+  }
 });
 
 test('事件表仅契约列，不包含IP/UA/URL/token/用户或联系方式', async () => {
