@@ -25,7 +25,7 @@ async function actionTarget(db: PoolClient, config: Config, token: string, purpo
   const initial = await db.query('SELECT user_id FROM auth_tokens WHERE token_hash=$1 AND purpose=$2', [hash, purpose]);
   if (!initial.rows[0]) throw new ApiError(410);
   // 所有凭据/令牌操作先锁用户再锁令牌，避免登录与改密交错及死锁。
-  const userResult = await db.query('SELECT * FROM users WHERE id=$1 FOR UPDATE', [initial.rows[0].user_id]);
+  const userResult = await db.query('SELECT * FROM users WHERE id=$1 FOR NO KEY UPDATE', [initial.rows[0].user_id]);
   const tokenResult = await db.query(`SELECT *,expires_at>clock_timestamp() AS valid FROM auth_tokens WHERE token_hash=$1 AND purpose=$2 FOR UPDATE`, [hash, purpose]);
   const user = userResult.rows[0], action = tokenResult.rows[0];
   if (!user || !action || !action.valid || action.revoked_at || action.target_email_normalized !== user.email_normalized || ['suspended', 'deleted'].includes(user.status)) throw new ApiError(410);
@@ -59,7 +59,7 @@ export function registerAuth(app: FastifyInstance, pool: Pool, config: Config): 
     const body = input('EmailInput', request.body);
     await verifyPassword(null, 'neutral-mail-request');
     await transaction(pool, async db => {
-      const result = await db.query('SELECT * FROM users WHERE email_normalized=$1 FOR UPDATE', [body.email]);
+      const result = await db.query('SELECT * FROM users WHERE email_normalized=$1 FOR NO KEY UPDATE', [body.email]);
       const user = result.rows[0];
       if (!user || !['active', 'pending_verification'].includes(user.status) || (purpose === 'verify_email' && user.email_verified_at)) return;
       if (await queueAction(db, config, user, purpose)) await audit(db, user.id, purpose === 'verify_email' ? 'request_verification' : 'request_reset', user.id, request.id);
@@ -89,7 +89,7 @@ export function registerAuth(app: FastifyInstance, pool: Pool, config: Config): 
     const token = secret(), sessionHash = digest(config, token, 'session'), expires = new Date(Date.now() + 24 * 3600 * 1000);
     const user = await transaction(pool, async db => {
       // 切换账户时也先锁旧会话用户；两名用户按 ID 排序，避免互换登录死锁。
-      const result = await db.query('SELECT * FROM users WHERE id=ANY($1::text[]) ORDER BY id FOR UPDATE', [[credentials.id, ...(previous ? [previous.user.id] : [])]]);
+      const result = await db.query('SELECT * FROM users WHERE id=ANY($1::text[]) ORDER BY id FOR NO KEY UPDATE', [[credentials.id, ...(previous ? [previous.user.id] : [])]]);
       const current = result.rows.find(row => row.id === credentials.id);
       const identity = await db.query('SELECT password_hash FROM auth_identities WHERE user_id=$1', [credentials.id]);
       if (!current || identity.rows[0]?.password_hash !== credentials.password_hash) throw new ApiError(401);

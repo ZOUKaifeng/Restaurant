@@ -67,8 +67,10 @@ export async function requireSession(pool: Pool, config: Config, request: Fastif
   return session;
 }
 export async function lockAuthenticated(client: PoolClient, _config: Config, session: Session): Promise<Session> {
+  // Serialize account mutations without blocking KEY SHARE checks from the
+  // already-started calls' ledger foreign keys. User IDs are never changed here.
   const users = await client.query(`SELECT id,email,display_name,locale,status,email_verified_at,created_at
-    FROM users WHERE id=$1 FOR UPDATE`, [session.user.id]);
+    FROM users WHERE id=$1 FOR NO KEY UPDATE`, [session.user.id]);
   const user = users.rows[0];
   if (!user || user.status !== 'active' || !user.email_verified_at) throw new ApiError(401);
   const sessions = await client.query(`SELECT id,user_id,session_secret_hash,revoked_at,expires_at

@@ -7,12 +7,12 @@ import MenuVisionPanel from './MenuVisionPanel';
 import { profileFields, profilePatch, toProfileDraft } from './profile';
 import type { ProfileDraft } from './profile';
 import type { OpeningHoursView, OpeningInterval, Restaurant, Versioned } from './types';
-import { ActionFeedback, ErrorNotice, fieldLabels, useAction } from './ui';
+import type { WebsiteEditableContent } from './website-types';
+import { ActionFeedback, ErrorNotice, useAction } from './ui';
 
 type Snapshot = { restaurant: Versioned<Restaurant>; hours: Versioned<OpeningHoursView> };
 type HourRow = { key: string; interval: OpeningInterval };
 const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
-const statusLabels = { draft: '草稿', active: '已启用', suspended: '已暂停', archived: '已归档' };
 function toHourRows(intervals: OpeningInterval[]): HourRow[] {
   return intervals.map((interval) => ({ key: crypto.randomUUID(), interval: { ...interval } }));
 }
@@ -55,8 +55,10 @@ function hoursProblems(rows: HourRow[]): string[] {
   return problems;
 }
 
-export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, onDirtyChange, onUpdated }: {
+export default function RestaurantWorkspace({ id, locales, active = true, busy, onBusyChange, onDirtyChange, onUpdated, headerInTopbar = false }: {
   id: string;
+  headerInTopbar?: boolean;
+  active?: boolean;
   locales: string[];
   busy: boolean;
   onBusyChange: (busy: boolean) => void;
@@ -70,17 +72,28 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const [websiteOpened, setWebsiteOpened] = useState(false);
   const [menuOpened, setMenuOpened] = useState(false);
   const [websiteDirty, setWebsiteDirty] = useState(false);
+  const [websiteContentDirty, setWebsiteContentDirty] = useState(false);
+  const contentSyncFlight = useRef<AbortController | null>(null);
+  const contentEpoch = useRef(0);
+  const contentContext = useRef({ id, active }); contentContext.current = { id, active };
+  useEffect(() => {
+    contentEpoch.current += 1;
+    return () => { contentEpoch.current += 1; contentSyncFlight.current?.abort(); };
+  }, [id, active]);
   const [menuDirty, setMenuDirty] = useState(false);
   const [websiteRequestBusy, setWebsiteRequestBusy] = useState(false);
   const [websiteJobsBusy, setWebsiteJobsBusy] = useState(false);
   const [menuRequestBusy, setMenuRequestBusy] = useState(false);
   const [menuJobsBusy, setMenuJobsBusy] = useState(false);
   const [localRequestBusy, setLocalRequestBusy] = useState(false);
-  const locksRef = useRef({ websiteRequest: false, websiteJobs: false, menuRequest: false, menuJobs: false, menuDirty: false, localRequest: false });
+  const locksRef = useRef({ websiteRequest: false, websiteJobs: false, menuRequest: false, menuJobs: false, localRequest: false });
   const reportLock = useCallback((key: keyof typeof locksRef.current, value: boolean) => {
     locksRef.current[key] = value;
     onBusyChange(Object.values(locksRef.current).some(Boolean));
   }, [onBusyChange]);
+  useEffect(() => {
+    onBusyChange(active && Object.values(locksRef.current).some(Boolean));
+  }, [active, onBusyChange]);
   const websiteRequestChanged = useCallback((value: boolean) => {
     setWebsiteRequestBusy(value);
     reportLock('websiteRequest', value);
@@ -98,10 +111,9 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
     reportLock('menuJobs', value);
   }, [reportLock]);
   const menuDirtyChanged = useCallback((value: boolean) => {
+    // Unsaved content uses the parent discard guard, not an in-flight request lock.
     setMenuDirty(value);
-    // App 只接收 busy；菜单未保存或写入未知时用退出锁保护，内部页签仍保持可用。
-    reportLock('menuDirty', value);
-  }, [reportLock]);
+  }, []);
   const localRequestChanged = useCallback((value: boolean) => {
     setLocalRequestBusy(value);
     reportLock('localRequest', value);
@@ -115,15 +127,15 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const profileDirty = !!snapshot && !!draft && Object.keys(profilePatch(draft, snapshot.restaurant.data)).length > 0;
   const hoursDirty = !!snapshot && JSON.stringify(rows.map((row) => row.interval)) !== JSON.stringify(snapshot.hours.data.intervals);
   const dirty = profileDirty || hoursDirty || websiteDirty || menuDirty;
-  const ownBusy = websiteRequestBusy || websiteJobsBusy || menuRequestBusy || menuJobsBusy || menuDirty || localRequestBusy;
+  const ownBusy = websiteRequestBusy || websiteJobsBusy || menuRequestBusy || menuJobsBusy || localRequestBusy;
   const otherBusy = busy && !ownBusy;
   const navigationBusy = otherBusy || localRequestBusy || websiteRequestBusy || menuRequestBusy || action.pending;
   const mutationBusy = navigationBusy || websiteJobsBusy;
   const onOpenMenu = useCallback(() => {
-    if (navigationBusy) return;
+    if (navigationBusy || websiteContentDirty) return;
     setMenuOpened(true);
     setTab('menu');
-  }, [navigationBusy]);
+  }, [navigationBusy, websiteContentDirty]);
   const onOpenAssets = useCallback(() => {
     if (!navigationBusy) setTab('assets');
   }, [navigationBusy]);
@@ -132,6 +144,23 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
     setConfirmRefresh(true);
   }, []);
   const problems = hoursProblems(rows);
+  const otherDrafts = useRef(false); otherDrafts.current = profileDirty || hoursDirty || menuDirty;
+  const contentSaved = useCallback(async (content: WebsiteEditableContent) => {
+    if (!contentContext.current.active || contentContext.current.id !== id) return;
+    setConflicted(true);
+    if (otherDrafts.current) throw new ApiError(412, 'REVISION_CONFLICT');
+    const controller = new AbortController(), epoch = contentEpoch.current; contentSyncFlight.current?.abort(); contentSyncFlight.current = controller;
+    localRequestChanged(true);
+    try {
+      const next = await readSnapshot(id, controller.signal);
+      if (controller.signal.aborted || epoch !== contentEpoch.current || contentContext.current.id !== id || !contentContext.current.active) return;
+      if (next.restaurant.data.revision < content.restaurant_revision || otherDrafts.current) throw new ApiError(412, 'REVISION_CONFLICT');
+      setSnapshot(next); setDraft(toProfileDraft(next.restaurant.data)); setRows(toHourRows(next.hours.data.intervals));
+      setConflicted(false); setConfirmRefresh(false); setSyncError(null); onUpdated(next.restaurant.data);
+      setMenuOpened(false);
+    } catch (error) { if (!controller.signal.aborted) { setSyncError(error); throw error; } }
+    finally { if (contentSyncFlight.current === controller) { contentSyncFlight.current = null; localRequestChanged(false); } }
+  }, [id, localRequestChanged, onUpdated]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -175,7 +204,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
 
   function saveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!snapshot || !draft || !profileDirty || hoursDirty || conflicted || mutationBusy) return;
+    if (!active || !snapshot || !draft || !profileDirty || hoursDirty || websiteContentDirty || conflicted || mutationBusy) return;
     const patch = profilePatch(draft, snapshot.restaurant.data);
     setSyncError(null);
     void action.run(async () => {
@@ -201,7 +230,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
 
   function saveHours(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!snapshot || !hoursDirty || profileDirty || conflicted || mutationBusy || !snapshot.restaurant.data.timezone || problems.length) return;
+    if (!active || !snapshot || !hoursDirty || profileDirty || websiteContentDirty || conflicted || mutationBusy || !snapshot.restaurant.data.timezone || problems.length) return;
     setSyncError(null);
     void action.run(async () => {
       let hours: Versioned<OpeningHoursView>;
@@ -239,17 +268,13 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
   const restaurant = snapshot.restaurant.data;
   const resting = weekdays.filter((_, index) => !rows.some((row) => row.interval.weekday === index + 1));
   const editable = restaurant.status === 'draft' || restaurant.status === 'active';
-  const disabled = mutationBusy || conflicted || !editable;
+  const disabled = mutationBusy || websiteContentDirty || conflicted || !editable;
 
-  return <section className="workspace" aria-label="餐厅管理">
-    <header className="workspace-header">
-      <div><p className="eyebrow">当前餐厅</p><h2>{restaurant.name}</h2><p className="micro">{statusLabels[restaurant.status]} · 版本 {restaurant.revision} · {restaurant.reservation_enabled ? '预约开关由后端管理' : '预订关闭'}</p></div>
+  return <section className={`workspace workspace-compact${tab === 'website' ? ' workspace-website' : ''}`} aria-label="餐厅管理">
+    {!headerInTopbar && <header className="workspace-header">
+      <h1 tabIndex={-1}>{restaurant.name}</h1>
       <button type="button" className="text-button" disabled={mutationBusy} onClick={() => { action.clear(); setConfirmRefresh(true); }}>刷新资料</button>
-    </header>
-    <div className="readiness">
-      <p>菜单图片可交给 DeepSeek 直接识别，再人工编辑、保存并确认。网页 Agent 的生成、隔离预览与本地发布仍须单独操作；菜单修改不自动更新已发布网页。</p>
-      <p className="micro">{restaurant.readiness.missing_fields.length ? `待补充：${restaurant.readiness.missing_fields.map((field) => fieldLabels[field] ?? '其他资料').join('、')}` : '服务端检查暂无资料缺项；生成与本地发布仍须分别确认，不代表开放预订。'}</p>
-    </div>
+    </header>}
     {!editable && <p className="notice">当前餐厅状态不可编辑。系统状态与归属不由此页面修改。</p>}
     {conflicted && <div className="notice" role="status"><p>版本发生冲突或写入结果需要核对。未保存内容仍保留，保存已暂停；请确认刷新，不会自动覆盖另一窗口。</p><button type="button" className="text-button" disabled={mutationBusy} onClick={() => setConfirmRefresh(true)}>查看刷新确认</button></div>}
     {confirmRefresh && <section className="notice confirmation" aria-labelledby="refresh-title">
@@ -259,17 +284,19 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
     </section>}
     <ActionFeedback action={action} />
     <ErrorNotice error={syncError} />
+    {websiteContentDirty && tab !== 'website' && <p className="notice" role="status">Website content has unsaved changes. Finish or discard them in Website before editing these fields.</p>}
     <div className="tab-nav" role="group" aria-label="资料分类">
       <button type="button" className={tab === 'profile' ? 'selected' : ''} aria-pressed={tab === 'profile'} disabled={navigationBusy} onClick={() => setTab('profile')}>餐厅资料{profileDirty ? ' · 未保存' : ''}</button>
       <button type="button" className={tab === 'hours' ? 'selected' : ''} aria-pressed={tab === 'hours'} disabled={navigationBusy} onClick={() => setTab('hours')}>周营业时间{hoursDirty ? ' · 未保存' : ''}</button>
       <button type="button" className={tab === 'assets' ? 'selected' : ''} aria-pressed={tab === 'assets'} disabled={navigationBusy} onClick={() => setTab('assets')}>菜单与图片</button>
-      <button type="button" className={tab === 'menu' ? 'selected' : ''} aria-pressed={tab === 'menu'} disabled={navigationBusy} onClick={onOpenMenu}>菜单识图{menuDirty ? ' · 待处理' : menuJobsBusy ? ' · 识别中' : ''}</button>
-      <button type="button" className={tab === 'website' ? 'selected' : ''} aria-pressed={tab === 'website'} disabled={navigationBusy} onClick={() => { setWebsiteOpened(true); setTab('website'); }}>网页生成{websiteDirty ? ' · 未提交' : ''}</button>
+      <button type="button" className={tab === 'menu' ? 'selected' : ''} aria-pressed={tab === 'menu'} disabled={navigationBusy || websiteContentDirty} onClick={onOpenMenu}>菜单识图{menuDirty ? ' · 待处理' : menuJobsBusy ? ' · 识别中' : ''}</button>
+      <button type="button" className={tab === 'website' ? 'selected' : ''} aria-pressed={tab === 'website'} disabled={navigationBusy} onClick={() => { setWebsiteOpened(true); setTab('website'); }}>Website{websiteDirty ? ' · Unsaved' : ''}</button>
+      {headerInTopbar && <button type="button" className="text-button workspace-refresh" disabled={mutationBusy} onClick={() => { action.clear(); setConfirmRefresh(true); }}>刷新资料</button>}
     </div>
     {tab === 'assets' && <AssetsPanel key={id} restaurantId={id} busy={mutationBusy} onBusyChange={localRequestChanged} onRecognize={onOpenMenu} />}
-    {menuOpened && <div hidden={tab !== 'menu'}><MenuVisionPanel key={id} restaurantId={id} active={tab === 'menu'} busy={otherBusy || localRequestBusy || websiteRequestBusy || action.pending} editable={editable} onBusyChange={menuRequestChanged} onJobsChange={menuJobsChanged} onDirtyChange={menuDirtyChanged} onOpenAssets={onOpenAssets} /></div>}
-    {websiteOpened && <div hidden={tab !== 'website'}><WebsitePanel key={id} restaurant={restaurant} active={tab === 'website'} busy={otherBusy || localRequestBusy || menuRequestBusy || action.pending} restaurantDirty={profileDirty || hoursDirty || menuDirty || conflicted} onBusyChange={websiteRequestChanged} onJobsChange={websiteJobsChanged} onDirtyChange={setWebsiteDirty} onRestaurantConflict={websiteRestaurantConflict} /></div>}
-    {tab === 'profile' ? <form onSubmit={saveProfile} aria-busy={action.pending}>
+    {menuOpened && (tab === 'menu' || menuDirty || menuJobsBusy || menuRequestBusy) && <div hidden={tab !== 'menu'}><MenuVisionPanel key={id} restaurantId={id} active={active && tab === 'menu'} busy={otherBusy || localRequestBusy || websiteRequestBusy || action.pending} editable={editable && !websiteContentDirty} onBusyChange={menuRequestChanged} onJobsChange={menuJobsChanged} onDirtyChange={menuDirtyChanged} onOpenAssets={onOpenAssets} /></div>}
+    {websiteOpened && <div hidden={tab !== 'website'}><WebsitePanel key={id} restaurant={restaurant} active={active && tab === 'website'} busy={otherBusy || localRequestBusy || menuRequestBusy || action.pending} restaurantDirty={profileDirty || hoursDirty || menuDirty || conflicted} onBusyChange={websiteRequestChanged} onJobsChange={websiteJobsChanged} onDirtyChange={setWebsiteDirty} onRestaurantConflict={websiteRestaurantConflict} onContentSaved={contentSaved} onContentDirtyChange={setWebsiteContentDirty} /></div>}
+    {!websiteContentDirty && tab === 'profile' ? <form onSubmit={saveProfile} aria-busy={action.pending}>
       <p className="micro">名称与主要语言必填。其余字段可留空；清空已填写内容将以 null 保存。只提交发生变化的固定字段。</p>
       <fieldset disabled={disabled}>
         {(['basic', 'address', 'contact'] as const).map((group) => <section className="profile-group" key={group}>
@@ -290,7 +317,7 @@ export default function RestaurantWorkspace({ id, locales, busy, onBusyChange, o
         {hoursDirty && <p className="notice">营业时间还有未保存内容，请先保存或放弃营业时间，再保存资料。</p>}
         <div className="save-row"><button type="submit" className="primary-button" disabled={!profileDirty || hoursDirty}>保存餐厅资料</button><button type="button" className="text-button" disabled={!profileDirty} onClick={() => setDraft(toProfileDraft(restaurant))}>放弃资料修改</button><span className="micro">{profileDirty ? '有未保存修改' : '资料与已读取版本一致'}</span></div>
       </fieldset>
-    </form> : tab === 'hours' ? <form onSubmit={saveHours} aria-busy={action.pending}>
+    </form> : !websiteContentDirty && tab === 'hours' ? <form onSubmit={saveHours} aria-busy={action.pending}>
       <p className="muted">按餐厅时区填写，每日可有多段。未配置的日期视为休息；保存会整体替换数组，最多 21 段。</p>
       <p className="micro">时区：{snapshot.hours.data.timezone ?? '尚未设置'}。单段大于 0 且不超过 24 小时，可跨至次日，不可重叠。</p>
       {!restaurant.timezone && <p className="notice">请先在餐厅资料中填写并保存有效时区，再保存营业时间。</p>}

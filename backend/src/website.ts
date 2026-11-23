@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { Pool, PoolClient } from 'pg';
 import type { Config } from './config.js';
@@ -14,16 +15,19 @@ import {
   type WebsiteRestaurant, type WebsiteAgent as Agent, type WebsiteState, type WebsiteVersion,
 } from './website-access.js';
 
+import { readWebsiteSource, websiteContentHash, websiteSourceStatus } from './website-source.js';
+import type { WebsiteContentVersion, WebsiteContentVersionPage } from './website-content-types.js';
+
 const base = '/api/v1/restaurants/:restaurantId/website';
 function privateHeaders(reply: FastifyReply): void {
   reply.header('Cache-Control', 'no-store').header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer');
 }
-function params(request: FastifyRequest): { rid: string; vid?: string; jid?: string } {
+function params(request: FastifyRequest, allowQuery = false): { rid: string; vid?: string; jid?: string } {
   const p = request.params as { restaurantId: string; versionId?: string; jobId?: string };
   for (const value of [p.restaurantId, p.versionId, p.jobId]) {
     if (value !== undefined && !/^[A-Za-z0-9_-]{16,64}$/.test(value)) throw new ApiError(400);
   }
-  if (Object.keys(request.query as object).length) throw new ApiError(400);
+  if (!allowQuery && Object.keys(request.query as object).length) throw new ApiError(400);
   return { rid: p.restaurantId, vid: p.versionId, jid: p.jobId };
 }
 function body(request: FastifyRequest, required: string[], optional: string[] = []): Record<string, unknown> {
@@ -68,7 +72,7 @@ async function replayJob(db: PoolClient, rid: string, userId: string, kind: stri
   if (result.rows[0]?.request_fingerprint !== undefined && result.rows[0].request_fingerprint !== fingerprint) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT');
   return result.rows[0];
 }
-async function quota(db: PoolClient, userId: string, rid: string, generate: boolean): Promise<void> {
+async function quota(db: PoolClient, userId: string, rid: string): Promise<void> {
   if ((await db.query(`SELECT id FROM website_jobs WHERE restaurant_id=$1 AND status IN ('queued','running') LIMIT 1`, [rid])).rowCount) throw new ApiError(409, 'WEBSITE_JOB_BUSY');
   await requireMenuIdle(db, rid);
   const daily = await db.query(`SELECT count(*)::int AS n FROM (
@@ -76,13 +80,34 @@ async function quota(db: PoolClient, userId: string, rid: string, generate: bool
     UNION ALL SELECT id FROM menu_jobs WHERE requesting_user_id=$1 AND created_at>clock_timestamp()-interval '24 hours'
     LIMIT 30) jobs`, [userId]);
   if (daily.rows[0].n >= 30) throw new ApiError(429, 'WEBSITE_DAILY_LIMIT');
-  if (generate) {
-    const versions = await db.query('SELECT count(*)::int AS n FROM (SELECT id FROM website_versions WHERE restaurant_id=$1 LIMIT 20) versions', [rid]);
-    if (versions.rows[0].n >= 20) throw new ApiError(409, 'WEBSITE_VERSION_LIMIT');
-  }
 }
 function jobReply(reply: FastifyReply, job: WebsiteJobRecord) {
   return reply.code(202).send({ job_id: job.id, status: job.status });
+}
+type VersionCursor = { v: 1; u: string; r: string; l: number; n: number; i: string };
+function versionCursor(config: Config, cursor: VersionCursor): string {
+  const value = Buffer.from(JSON.stringify(cursor)).toString('base64url');
+  return `${value}.${createHmac('sha256', config.cursorSecret).update(`website_versions\0${value}`).digest('base64url')}`;
+}
+function readVersionCursor(config: Config, value: unknown, userId: string, rid: string, limit: number): VersionCursor {
+  try {
+    if (typeof value !== 'string' || value.length > 1024 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(value)) throw new Error();
+    const [text, signature] = value.split('.');
+    const expected = createHmac('sha256', config.cursorSecret).update(`website_versions\0${text}`).digest();
+    const actual = Buffer.from(signature!, 'base64url');
+    if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) throw new Error();
+    const cursor = JSON.parse(Buffer.from(text!, 'base64url').toString('utf8')) as VersionCursor;
+    if (cursor.v !== 1 || cursor.u !== userId || cursor.r !== rid || cursor.l !== limit || !Number.isInteger(cursor.n) ||
+        cursor.n < 1 || cursor.n > 2147483647 || typeof cursor.i !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(cursor.i)) throw new Error();
+    return cursor;
+  } catch { throw new ApiError(400, 'WEBSITE_CURSOR_INVALID'); }
+}
+async function contentVersion(db: PoolClient, version: WebsiteVersion): Promise<WebsiteContentVersion> {
+  const source = await readWebsiteSource(db, version.restaurant_id, version.id);
+  return { id: version.id, restaurant_id: version.restaurant_id, version_number: version.version_number,
+    summary: version.summary, created_at: version.created_at.toISOString(), checksum: version.checksum, asset_ids: version.asset_ids,
+    source_status: await websiteSourceStatus(db, version), origin: source?.origin ?? 'legacy',
+    base_version_id: source?.base_version_id ?? null, public_content_hash: source?.public_content_hash ?? null };
 }
 export function registerWebsites(app: FastifyInstance, pool: Pool, config: Config): void {
   const store = createAssetStore(config);
@@ -105,6 +130,34 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
     });
     return result;
   });
+  app.get(`${base}/versions`, async (request, reply) => {
+    privateHeaders(reply);
+    const session = await requireSession(pool, config, request), { rid } = params(request, true);
+    const query = request.query as Record<string, unknown>;
+    if (Object.keys(query).some(key => !['limit', 'cursor'].includes(key))) throw new ApiError(400);
+    if (query.limit !== undefined && (typeof query.limit !== 'string' || !/^[1-9][0-9]?$/.test(query.limit))) throw new ApiError(400);
+    const limit = query.limit === undefined ? 20 : Number(query.limit);
+    if (limit > 50) throw new ApiError(400);
+    const cursor = query.cursor === undefined ? null : readVersionCursor(config, query.cursor, session.user.id, rid, limit);
+    return locked(pool, config, session, rid, async db => {
+      const versions = await db.query<WebsiteVersion>(`SELECT * FROM website_versions WHERE restaurant_id=$1
+        ${cursor ? 'AND (version_number,id)<($2::integer,$3::text)' : ''} ORDER BY version_number DESC,id DESC LIMIT $${cursor ? 4 : 2}`,
+      cursor ? [rid, cursor.n, cursor.i, limit + 1] : [rid, limit + 1]);
+      const rows = versions.rows.slice(0, limit), hasMore = versions.rows.length > limit, last = rows.at(-1);
+      return { items: await Promise.all(rows.map(version => contentVersion(db, version))), has_more: hasMore,
+        next_cursor: hasMore && last ? versionCursor(config, { v: 1, u: session.user.id, r: rid, l: limit,
+          n: last.version_number, i: last.id }) : null } satisfies WebsiteContentVersionPage;
+    });
+  });
+  app.get(`${base}/versions/:versionId`, async (request, reply) => {
+    privateHeaders(reply);
+    const session = await requireSession(pool, config, request), { rid, vid } = params(request);
+    return locked(pool, config, session, rid, async db => {
+      const version = (await db.query<WebsiteVersion>('SELECT * FROM website_versions WHERE restaurant_id=$1 AND id=$2', [rid, vid])).rows[0];
+      if (!version) throw new ApiError(404);
+      return contentVersion(db, version);
+    });
+  });
   app.post(`${base}/messages`, async (request, reply) => {
     privateHeaders(reply);
     const session = (await requireWrite(pool, config, request))!, { rid } = params(request);
@@ -117,7 +170,7 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
       requireWebsiteAI(config); requireWebsiteRestaurant(row);
       const current = await initialize(db, rid);
       if (current.revision !== input.expected_revision) throw new ApiError(409, 'AGENT_REVISION_CONFLICT');
-      await quota(db, session.user.id, rid, false);
+      await quota(db, session.user.id, rid);
       const messages: WebsiteMessage[] = [...current.messages, { role: 'user' as const, content: input.message }].slice(-24);
       const snapshot = await websiteSnapshot(db, row, []), jid = id('wsj');
       await db.query('UPDATE website_agents SET messages=$2,revision=revision+1,updated_at=clock_timestamp() WHERE restaurant_id=$1', [rid, JSON.stringify(messages)]);
@@ -132,11 +185,13 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
   app.post(`${base}/generations`, async (request, reply) => {
     privateHeaders(reply);
     const session = (await requireWrite(pool, config, request))!, { rid } = params(request);
-    const value = body(request, ['brief', 'asset_ids', 'public_assets_confirmed', 'expected_restaurant_revision'], ['expected_menu_revision']);
+    const value = body(request, ['brief', 'asset_ids', 'public_assets_confirmed', 'expected_restaurant_revision'], ['expected_menu_revision', 'image_vision_confirmed']);
+    if (Object.hasOwn(value, 'image_vision_confirmed') && value.image_vision_confirmed !== true) invalid('image_vision_confirmed', 'CONFIRMATION_REQUIRED');
     if (value.public_assets_confirmed !== true) invalid('public_assets_confirmed', 'CONFIRMATION_REQUIRED');
     if (!Array.isArray(value.asset_ids) || value.asset_ids.length > 8 || value.asset_ids.some(aid => typeof aid !== 'string' || !/^ast_[A-Za-z0-9_-]{24}$/.test(aid)) || new Set(value.asset_ids).size !== value.asset_ids.length) invalid('asset_ids');
     const input = { brief: text(value.brief, 'brief', 3000), asset_ids: value.asset_ids as string[], public_assets_confirmed: true as const,
       expected_restaurant_revision: revision(value.expected_restaurant_revision, 'expected_restaurant_revision'),
+      ...(value.image_vision_confirmed === true ? { image_vision_confirmed: true as const } : {}),
       ...(Object.hasOwn(value, 'expected_menu_revision') ? { expected_menu_revision: revision(value.expected_menu_revision, 'expected_menu_revision') } : {}) };
     const key = idem(request), fingerprint = websiteFingerprint(input);
     const job = await locked(pool, config, session, rid, async (db, row) => {
@@ -144,7 +199,7 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
       if (existing) return existing;
       requireWebsiteAI(config); requireWebsiteRestaurant(row);
       if (row.revision !== input.expected_restaurant_revision) throw new ApiError(412, 'RESTAURANT_REVISION_CONFLICT');
-      await quota(db, session.user.id, rid, true);
+      await quota(db, session.user.id, rid);
       const menuDraft = await readMenuDraft(db, rid);
       if (input.expected_menu_revision !== undefined && input.expected_menu_revision !== (menuDraft?.revision ?? 0)) throw new ApiError(409, 'MENU_REVISION_CONFLICT');
       const confirmedMenu = await readConfirmedMenu(db, rid);
@@ -165,16 +220,25 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
   app.post(`${base}/publication`, async (request, reply) => {
     privateHeaders(reply);
     const session = (await requireWrite(pool, config, request))!, { rid } = params(request);
-    const value = body(request, ['version_id', 'expected_revision'], ['slug']);
+    const value = body(request, ['version_id', 'expected_revision'], ['slug', 'expected_checksum', 'expected_public_content_hash', 'content_mode', 'review_confirmed']);
+    for (const field of ['expected_checksum', 'expected_public_content_hash']) {
+      if (Object.hasOwn(value, field) && (typeof value[field] !== 'string' || !/^[a-f0-9]{64}$/.test(value[field] as string))) invalid(field);
+    }
+    if (Object.hasOwn(value, 'content_mode') && !['current', 'historical'].includes(value.content_mode as string)) invalid('content_mode');
+    if (Object.hasOwn(value, 'review_confirmed') && value.review_confirmed !== true) invalid('review_confirmed', 'CONFIRMATION_REQUIRED');
     const input = { version_id: objectId(value.version_id, 'version_id'), expected_revision: revision(value.expected_revision, 'expected_revision'),
-      ...(Object.hasOwn(value, 'slug') ? { slug: value.slug } : {}) };
+      ...(Object.hasOwn(value, 'slug') ? { slug: value.slug } : {}),
+      ...(Object.hasOwn(value, 'expected_checksum') ? { expected_checksum: value.expected_checksum as string } : {}),
+      ...(Object.hasOwn(value, 'expected_public_content_hash') ? { expected_public_content_hash: value.expected_public_content_hash as string } : {}),
+      ...(Object.hasOwn(value, 'content_mode') ? { content_mode: value.content_mode as 'current' | 'historical' } : {}),
+      ...(Object.hasOwn(value, 'review_confirmed') ? { review_confirmed: true as const } : {}) };
     if (input.slug !== undefined && (typeof input.slug !== 'string' || !/^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/.test(input.slug) || ['admin', 'api', 'auth', 'www'].includes(input.slug))) invalid('slug');
     const key = idem(request), fingerprint = websiteFingerprint(input);
     // 发布前核验真实资源；文件/S3 I/O不占用户和餐厅行锁，最终提交再次核验版本归属。
     await ownedWebsiteRestaurant(pool, session.user.id, rid);
-    if (!localWebsiteOrigin(config)) throw new ApiError(503, 'PUBLIC_DEPLOYMENT_UNCONFIGURED');
     const alreadyApplied = (await pool.query('SELECT id FROM website_publish_actions WHERE restaurant_id=$1 AND requesting_user_id=$2 AND idempotency_key=$3', [rid, session.user.id, key])).rowCount;
     if (!alreadyApplied) {
+      if (!localWebsiteOrigin(config)) throw new ApiError(503, 'PUBLIC_DEPLOYMENT_UNCONFIGURED');
       const version = await readyWebsiteVersion(pool, rid, input.version_id);
       for (const asset of version.snapshot.assets) {
         const stored = (await pool.query('SELECT storage_backend,storage_key,size_bytes,checksum FROM assets WHERE restaurant_id=$1 AND id=$2 AND status=$3', [rid, asset.id, 'ready'])).rows[0];
@@ -186,17 +250,40 @@ export function registerWebsites(app: FastifyInstance, pool: Pool, config: Confi
       const existing = (await db.query(`SELECT request_fingerprint,result FROM website_publish_actions
         WHERE restaurant_id=$1 AND requesting_user_id=$2 AND idempotency_key=$3`, [rid, session.user.id, key])).rows[0];
       if (existing && existing.request_fingerprint !== fingerprint) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT');
+      // 原请求已应用时先重放；当前内容、发布指针或部署配置变化不能覆盖已提交的结果。
+      if (existing) return existing.result;
       const origin = localWebsiteOrigin(config);
       if (!origin) throw new ApiError(503, 'PUBLIC_DEPLOYMENT_UNCONFIGURED');
       requireWebsiteRestaurant(row);
-      if (existing) return existing.result;
       await initialize(db, rid);
       const current = (await db.query('SELECT revision,published_version_id,slug FROM website_publications WHERE restaurant_id=$1 FOR UPDATE', [rid])).rows[0]!;
       if (current.revision !== input.expected_revision) throw new ApiError(409, 'PUBLICATION_REVISION_CONFLICT');
       if (current.slug && input.slug !== undefined && current.slug !== input.slug) throw new ApiError(409, 'WEBSITE_SLUG_IMMUTABLE');
       const slug = current.slug ?? input.slug;
       if (!slug) invalid('slug', 'FIRST_PUBLICATION_REQUIRES_SLUG');
-      await readyWebsiteVersion(db, rid, input.version_id);
+      const version = await readyWebsiteVersion(db, rid, input.version_id);
+      const source = await readWebsiteSource(db, rid, version.id);
+      const enhanced = source?.origin === 'content_refresh' || input.content_mode !== undefined ||
+        input.expected_checksum !== undefined || input.expected_public_content_hash !== undefined || input.review_confirmed !== undefined;
+      if (enhanced) {
+        if (!input.content_mode || !input.expected_checksum || !input.expected_public_content_hash || input.review_confirmed !== true)
+          throw new ApiError(409, 'WEBSITE_CONTENT_REVIEW_REQUIRED');
+        if (input.expected_checksum !== version.checksum) throw new ApiError(409, 'WEBSITE_CHECKSUM_CONFLICT');
+        const versionHash = websiteContentHash(version.snapshot);
+        if (input.expected_public_content_hash !== versionHash || (source && source.public_content_hash !== versionHash))
+          throw new ApiError(409, 'WEBSITE_PUBLIC_CONTENT_CONFLICT');
+        if (input.content_mode === 'current') {
+          await requireMenuIdle(db, rid);
+          const menu = await readMenuDraft(db, rid);
+          if (menu?.status === 'draft') throw new ApiError(409, 'MENU_CONFIRMATION_REQUIRED');
+          const currentSnapshot = await websiteSnapshot(db, row, version.asset_ids, true);
+          if (websiteContentHash(currentSnapshot) !== versionHash) throw new ApiError(409, 'WEBSITE_PUBLIC_CONTENT_CONFLICT');
+          if (source?.origin === 'content_refresh' && await websiteSourceStatus(db, version) !== 'available')
+            throw new ApiError(409, 'WEBSITE_SOURCE_INCOMPATIBLE');
+        }
+        // historical 仅移动发布指针，不把旧快照写回餐厅/菜单；公共订位仍受当前业务开关控制。
+      }
+      // 无来源的旧 generation 不因未知源码被禁止按原协议发布。
       // 唯一索引处理不同餐厅的并发注册；不以先查后写冒充全局唯一。
       try {
         await db.query(`UPDATE website_publications SET revision=revision+1,published_version_id=$2,slug=$3,

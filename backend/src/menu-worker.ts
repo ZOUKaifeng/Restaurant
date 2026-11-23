@@ -3,14 +3,15 @@ import type { Pool, PoolClient } from 'pg';
 import type { Config } from './config.js';
 import { transaction } from './db.js';
 import { ApiError } from './errors.js';
-import { recognizeMenuImages } from './deepseek.js';
+import { recognizeMenuImages, parseAiTokenUsage } from './deepseek.js';
+import { startAiCall, finishAiCall } from './ai-metering.js';
 import { createAssetStore } from './asset-storage.js';
 import { checksum, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES } from './asset-validation.js';
 import { normalizeMenuData, type MenuData, type MenuImageInput, type MenuRecognitionOutput } from './menu-data.js';
 import { menuAudit, menuDraftColumns, requireMenuAI, type MenuDraftRecord, type MenuJob, type MenuSource } from './menu-access.js';
 
 export type MenuRecognizer = (config: Config, images: MenuImageInput[], beforeSend?: () => Promise<void>) => Promise<MenuRecognitionOutput>;
-const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
+const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_CONFIGURATION_INVALID', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
   'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'MENU_SOURCE_UNAVAILABLE']);
 function errorCode(error: unknown): string {
   if (error && typeof error === 'object') {
@@ -22,11 +23,11 @@ function errorCode(error: unknown): string {
     if (status === 401 || status === 403) return 'AI_AUTH_FAILED';
     if (status === 408 || status === 504) return 'AI_TIMEOUT';
   }
-  // 不保存异常 message、供应商正文、模型输入、base64 或 usage。
+  // 错误码不保存异常 message、供应商正文、模型输入或 base64。
   return 'AI_PROVIDER_UNAVAILABLE';
 }
 async function lockWorkerContext(db: PoolClient, job: Pick<MenuJob, 'requesting_user_id' | 'restaurant_id'>): Promise<boolean> {
-  const user = (await db.query('SELECT id,status,email_verified_at FROM users WHERE id=$1 FOR UPDATE', [job.requesting_user_id])).rows[0];
+  const user = (await db.query('SELECT id,status,email_verified_at FROM users WHERE id=$1 FOR NO KEY UPDATE', [job.requesting_user_id])).rows[0];
   const restaurant = (await db.query('SELECT id,status FROM restaurants WHERE id=$1 FOR UPDATE', [job.restaurant_id])).rows[0];
   const member = (await db.query(`SELECT id FROM restaurant_members WHERE restaurant_id=$1 AND user_id=$2
     AND role='owner' AND status='active' FOR UPDATE`, [job.restaurant_id, job.requesting_user_id])).rows[0];
@@ -106,11 +107,12 @@ async function readImages(config: Config, job: MenuJob): Promise<MenuImageInput[
   } catch { throw new ApiError(503, 'MENU_SOURCE_UNAVAILABLE'); }
 }
 // 文件全部读取后、付费调用前，再按同一锁序核验授权、租约、菜单 revision 和服务器来源快照。
-async function beforePaidCall(pool: Pool, original: MenuJob): Promise<boolean> {
+async function beforePaidCall(pool: Pool, original: MenuJob, model?: string): Promise<boolean> {
   return transaction(pool, async db => {
     const valid = await lockWorkerContext(db, original);
     const job = (await db.query<MenuJob & { expired: boolean }>(`SELECT *,lease_expires_at<=clock_timestamp() AS expired FROM menu_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
-    if (!job || job.status !== 'running' || job.lease_token !== original.lease_token) return false;
+    if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id ||
+        job.status !== 'running' || job.lease_token !== original.lease_token) return false;
     const draft = await draftForJob(db, job);
     const failure = !valid ? 'MENU_CONTEXT_REVOKED' : job.expired ? 'JOB_INTERRUPTED' :
       !draft || draft.revision !== job.expected_revision ? 'MENU_CONTEXT_CHANGED' :
@@ -118,6 +120,8 @@ async function beforePaidCall(pool: Pool, original: MenuJob): Promise<boolean> {
     if (failure) { await failJob(db, job, failure); return false; }
     const lease = (await db.query("SELECT $1::timestamptz>clock_timestamp()+interval '80 seconds' AS valid", [job.lease_expires_at])).rows[0]!;
     if (!lease.valid) { await failJob(db, job, 'JOB_INTERRUPTED'); return false; }
+    if (model !== undefined) await startAiCall(db, { requestingUserId: original.requesting_user_id, restaurantId: original.restaurant_id,
+      menuJobId: original.id, runnerToken: original.lease_token!, callIndex: 1, model });
     return true;
   });
 }
@@ -156,16 +160,31 @@ export async function runMenuJobs(pool: Pool, config: Config, recognizer: MenuRe
     const claimed = await claimJob(pool);
     if (!claimed.job) return claimed.consumed ? 1 : 0;
     const job = claimed.job;
-    let data: MenuData | undefined, failure: string | undefined;
+    let data: MenuData | undefined, failure: string | undefined, callStarted: number | undefined;
+    const beforeSend = async () => {
+      if (callStarted !== undefined) return;
+      if (!await beforePaidCall(pool, job, config.website?.model ?? 'deepseek-flash')) throw new ApiError(503, 'MENU_SEND_CANCELLED');
+      callStarted = Date.now();
+    };
+    const finishCall = async (status: 'completed' | 'failed', usage: unknown, code?: string) => {
+      if (callStarted === undefined) return;
+      await transaction(pool, db => finishAiCall(db, { requestingUserId: job.requesting_user_id, restaurantId: job.restaurant_id,
+        menuJobId: job.id, runnerToken: job.lease_token!, callIndex: 1, status, usage: parseAiTokenUsage(usage),
+        elapsedMs: Math.max(0, Date.now() - callStarted!), ...(code ? { errorCode: code } : {}) }));
+    };
     try {
       requireMenuAI(config);
       const images = await readImages(config, job);
       if (!await beforePaidCall(pool, job)) return 1;
-      const output = await recognizer(config, images, async () => {
-        if (!await beforePaidCall(pool, job)) throw new ApiError(503, 'MENU_SEND_CANCELLED');
-      });
+      // 真实 provider 及显式第三参数的注入客户端使用发送 hook；旧 fixture 不实现 hook，单独兼容。
+      if (recognizer !== recognizeMenuImages && recognizer.length < 3) await beforeSend();
+      const output = await recognizer(config, images, beforeSend);
+      await finishCall('completed', output?.usage);
       data = normalizeMenuData(output?.data, true);
-    } catch (error) { failure = errorCode(error); }
+    } catch (error) {
+      failure = errorCode(error);
+      await finishCall('failed', (error as { usage?: unknown } | null)?.usage, failure);
+    }
     await finishJob(pool, job, data, failure);
     return 1;
   } finally {

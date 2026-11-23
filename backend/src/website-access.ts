@@ -23,7 +23,7 @@ export type WebsiteJobRecord = Omit<WebsiteJobView, 'created_at'> & { created_at
 export interface WebsiteJob extends WebsiteJobRecord {
   restaurant_id: string; requesting_user_id: string; input: {
     message?: string; messages?: WebsiteMessage[]; brief?: string; asset_ids?: string[];
-    public_assets_confirmed?: true; expected_revision?: number; expected_restaurant_revision?: number;
+    public_assets_confirmed?: true; image_vision_confirmed?: true; expected_revision?: number; expected_restaurant_revision?: number;
   };
   snapshot: WebsiteSnapshot; agent_revision: number | null; lease_token: string | null;
   lease_expires_at: Date | null; usage?: unknown;
@@ -51,7 +51,7 @@ export interface WebsiteVersionView {
   checksum: string; asset_ids: string[];
 }
 export interface WebsiteVersion extends Omit<WebsiteVersionView, 'created_at'> {
-  created_at: Date; html: string; snapshot: WebsiteSnapshot; model: string; usage: unknown;
+  created_at: Date; html: string; snapshot: WebsiteSnapshot; model: string | null; usage: unknown;
 }
 export interface WebsitePublication {
   revision: number; published_version_id: string | null; slug: string | null;

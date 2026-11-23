@@ -9,7 +9,7 @@ import sharp from 'sharp';
 import { PDFDocument, PDFName, PDFString } from 'pdf-lib';
 import { createApp } from '../src/app.js';
 import { loadConfig, type Config } from '../src/config.js';
-import { assertAppDatabase, createPool, id } from '../src/db.js';
+import { assertAppDatabase, id } from '../src/db.js';
 import { migrate } from '../scripts/migrate.js';
 import { digest, FLOW_COOKIE, SESSION_COOKIE } from '../src/security.js';
 import { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
@@ -20,27 +20,21 @@ import { checksum, MAX_IMAGE_BYTES, MAX_UPLOAD_BYTES, validateUpload } from '../
 let app: FastifyInstance, pool: Pool, owner: Pool, config: Config, root: string;
 let sequence = 0;
 const password = '素材测试-Valid-Password-2026!';
-const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'ai_calendar_credit_grants,website_content_actions,website_version_sources,billing_subscriptions,billing_offer_grants,ai_quota_ledger,ai_quota_periods,ai_model_calls,billing_accounts,analytics_events,analytics_daily,website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 interface Actor { cookie: string; csrf: string; email: string }
-function testUrl(key: string, role: string): string {
-  const value = process.env[key];
-  assert.ok(value, `必须提供真实 ${key}，不可跳过或连接开发数据库`);
-  const url = new URL(value);
-  assert.equal(url.hostname, '127.0.0.1');
-  assert.equal(url.port, '55439');
-  assert.equal(url.pathname, '/restaurant_test');
-  assert.equal(decodeURIComponent(url.username), role);
-  return value;
-}
+import { createTestDatabasePool, createTestDatabasePools, readTestDatabaseScope } from './database-scope.js';
 before(async () => {
-  const appUrl = testUrl('TEST_DATABASE_URL', 'restaurant_test_app');
-  const ownerUrl = testUrl('TEST_MIGRATION_DATABASE_URL', 'restaurant_test_owner');
+  const scope = readTestDatabaseScope();
+  const { databaseUrl: appUrl, migrationDatabaseUrl: ownerUrl } = scope;
   root = await mkdtemp('/tmp/restaurant-assets-test-');
-  config = loadConfig({ ...process.env, NODE_ENV: 'test', DATABASE_URL: appUrl, MIGRATION_DATABASE_URL: ownerUrl,
+  config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: appUrl, MIGRATION_DATABASE_URL: ownerUrl,
+    TOKEN_PEPPER: process.env.TOKEN_PEPPER ?? 'assets-fixture-pepper-'.repeat(4),
+    CURSOR_SECRET: process.env.CURSOR_SECRET ?? 'assets-fixture-cursor-'.repeat(4),
+    OUTBOX_ENCRYPTION_KEY: process.env.OUTBOX_ENCRYPTION_KEY ?? 'a3'.repeat(32),
     APP_ORIGIN: 'https://localhost:5173', EMAIL_MODE: 'disabled', STORAGE_MODE: 'local', STORAGE_LOCAL_ROOT: root });
   assert.equal(config.storageMode, 'local');
   assert.equal(config.storageLocalRoot, root);
-  owner = createPool(ownerUrl); pool = createPool(appUrl);
+  ({ owner, pool } = await createTestDatabasePools(scope));
   await migrate(owner, 'restaurant_test_app');
   await assertAppDatabase(pool);
   await owner.query(`TRUNCATE ${tables}`);
@@ -356,7 +350,7 @@ test('真实 PG 与真实私有文件素材闭环', async t => {
     } finally { store.close(); await app.close(); app = createApp({ pool, config }); await app.ready(); }
   });
   await t.test('新连接/新 app 持久化；存储后端按记录冻结，不随当前模式变化', async () => {
-    await app.close(); await pool.end(); pool = createPool(config.databaseUrl);
+    await app.close(); await pool.end(); pool = await createTestDatabasePool('app', readTestDatabaseScope());
     app = createApp({ pool, config: { ...config, storageMode: 's3', s3: { region: 'us-east-1', bucket: 'synthetic-test-bucket', endpoint: 'http://127.0.0.1:9', forcePathStyle: true } } });
     await app.ready();
     assert.equal((await request('GET', `/restaurants/${rid}/assets`, alice)).json().storage_mode, 's3');

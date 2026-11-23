@@ -6,6 +6,7 @@ import type { RouteState } from './routing';
 import type { RegistrationPolicy, SessionView } from './types';
 import { acceptedMessage, ActionFeedback, ErrorNotice, LocaleSelect, PageLink, useAction } from './ui';
 import type { Navigate } from './ui';
+import './auth.css';
 
 interface Props {
   route: RouteState;
@@ -20,17 +21,18 @@ interface Props {
   onConsumed: (reset: boolean) => void;
 }
 const headings: Record<string, { title: string; text: string }> = {
-  login: { title: '登录商家账户', text: '使用已验证的邮箱，继续管理餐厅资料。' },
-  register: { title: '申请商家账户', text: '先验证邮箱，再创建餐厅草稿。' },
-  forgot: { title: '找回密码', text: '申请重置链接。提交不会立即修改密码或撤销会话。' },
-  resend: { title: '重新申请验证邮件', text: '填写注册邮箱。受理结果不透露账户是否存在。' },
-  verify: { title: '验证邮箱', text: '只有点击确认后，才会提交此邮件中的验证请求。' },
-  reset: { title: '设置新密码', text: '确认后重置密码，并撤销该账户的全部会话；不会自动登录。' },
+  login: { title: 'Welcome back', text: 'Sign in with your verified email to continue.' },
+  register: { title: 'Start with your restaurant', text: 'Create an account, then verify your email to get started.' },
+  forgot: { title: 'Reset password', text: 'Request a reset link. Your password and sessions stay unchanged until you confirm a new password.' },
+  resend: { title: 'Verify your email', text: 'Request a new verification link using your registration email.' },
+  verify: { title: 'Confirm your email', text: 'Ready when you are. Your email is verified only after you select the button below.' },
+  reset: { title: 'Set a new password', text: 'Resetting your password revokes all sessions for this account. You will need to sign in again.' },
 };
 
 export default function AuthView(props: Props) {
   const { route, policy, navigate, busy } = props;
-  const page = route.page === 'home' ? 'login' : route.page;
+  const routePage: string = route.page;
+  const page = routePage === 'home' || !Object.hasOwn(headings, routePage) ? 'login' : routePage;
   const heading = headings[page] ?? headings.login;
   const action = useAction(props.onBusyChange);
   const [completed, setCompleted] = useState(false);
@@ -83,72 +85,81 @@ export default function AuthView(props: Props) {
         await api.verify({ token });
         setCompleted(true);
         props.onConsumed(false);
-        return '邮箱验证成功。请自行登录，验证不会自动建立会话。';
+        return 'Email verified. Sign in to continue; verification does not sign you in automatically.';
       }
       if (isReset && token) {
         await api.reset({ token, new_password: password });
         setCompleted(true);
         props.onConsumed(true);
-        return '密码已重置，该账户的全部会话已撤销。请使用新密码自行登录。';
+        return 'Password reset. All sessions for this account have been revoked. Sign in with your new password.';
       }
     });
   }
 
-  return <section className="auth-layout">
-    <div className="section-intro">
-      <p className="eyebrow">账户 / {isRegister ? '注册' : isReset ? '重置' : isVerify ? '验证' : isEmailOnly ? '邮件申请' : '登录'}</p>
-      <h1 tabIndex={-1}>{heading.title}</h1>
-      <p className="muted intro-copy">{heading.text}</p>
-      <p className="micro intro-footnote">管理账户、餐厅草稿与菜单图片素材。<br />菜单素材不做 AI 处理；发布和预约尚未实现。</p>
-    </div>
+  return <section className="tf-auth auth-layout">
+    <aside className="auth-editorial" aria-label="The Table Folk approach">
+      <img className="auth-image" src="/brand/bistro-interior.jpg" alt="A warmly lit bistro dining room with thoughtfully set tables" width={1000} height={800} />
+      <div className="auth-brand-copy">
+        <p className="eyebrow">Table Folk / For the people behind the table</p>
+        <h2>Your restaurant.<br />More room to shine.</h2>
+        <p>Thoughtful tools. Less noise. A little more space to focus on the place you make your own.</p>
+      </div>
+    </aside>
     <div className="form-column">
+      <header className="auth-form-heading">
+        <p className="eyebrow">Your Table Folk account</p>
+        <h1 tabIndex={-1}>{heading.title}</h1>
+        <p className="muted intro-copy">{heading.text}</p>
+      </header>
       {isRegister && <>
-        {props.policyLoading && <p role="status" className="micro">正在读取注册规则…</p>}
+        {props.policyLoading && <p role="status" className="micro">Loading registration requirements…</p>}
         <ErrorNotice error={props.policyError} />
         {!props.policyLoading && (Boolean(props.policyError) || policyBlocked) && <div className="notice">
-          <p>注册需先读取当前规则与条款版本。</p>
-          <button type="button" className="text-button" disabled={busy} onClick={props.reloadPolicy}>重新读取注册规则</button>
+          <p>The current registration requirements and terms version must be loaded before you can continue.</p>
+          <button type="button" className="text-button" disabled={busy} onClick={props.reloadPolicy}>Reload registration requirements</button>
         </div>}
       </>}
       {tokenMissing && <div className="notice" role="status">
-        <p>本页没有可用的邮件链接。令牌只保留在内存，刷新或离开后请重新打开原邮件；失效时请重新申请。</p>
-        <PageLink href={isReset ? '/auth/forgot' : '/auth/resend'} navigate={navigate} disabled={busy}>重新申请邮件</PageLink>
+        <p>No email link is available on this page. Links are kept in memory only. After refreshing or leaving, reopen the original email link. If it has expired, request a new one.</p>
+        <PageLink href={isReset ? '/auth/forgot' : '/auth/resend'} navigate={navigate} disabled={busy}>Request a new email link</PageLink>
       </div>}
       {!completed && <form onSubmit={submit} aria-busy={action.pending}>
         <fieldset disabled={busy || action.pending || policyBlocked || tokenMissing}>
           {!isReset && !isVerify && <div className="field">
-            <label htmlFor="auth-email">邮箱</label>
+            <label htmlFor="auth-email">Email address</label>
             <input id="auth-email" name="email" type="email" autoComplete="username" inputMode="email" maxLength={254} required />
           </div>}
           {(page === 'login' || isRegister || isReset) && <div className="field">
-            <label htmlFor="auth-password">{isReset ? '新密码' : '密码'}</label>
+            <label htmlFor="auth-password">{isReset ? 'New password' : 'Password'}</label>
             <input id="auth-password" name="password" type="password" autoComplete={page === 'login' ? 'current-password' : 'new-password'} minLength={page === 'login' ? 1 : 15} maxLength={128} aria-describedby="password-help" required />
-            <p className="micro" id="password-help">{page === 'login' ? '密码不会保存在浏览器存储中。' : '15–128 个字符，不截断密码。建议使用不重复的长密码。'}</p>
+            <p className="micro" id="password-help">{page === 'login' ? 'Your password is not saved in local or session storage.' : 'Use 15–128 characters. Choose a long, unique password; it will not be truncated.'}</p>
           </div>}
           {isRegister && <>
-            <div className="field"><label htmlFor="display-name">称呼 <span className="muted">（可选）</span></label><input id="display-name" name="display_name" autoComplete="nickname" maxLength={100} /></div>
-            {policy && <div className="field"><label htmlFor="account-locale">账户语言</label><LocaleSelect id="account-locale" name="locale" locales={policy.supported_locales} /></div>}
+            <div className="field"><label htmlFor="display-name">Display name <span className="muted">(optional)</span></label><input id="display-name" name="display_name" autoComplete="nickname" maxLength={100} /></div>
+            {policy && <div className="field"><label htmlFor="account-locale">Language</label><LocaleSelect id="account-locale" name="locale" locales={policy.supported_locales} /></div>}
             <div className="terms-block">
-              <p className="micro">正式内容尚未审核，当前为草案。条款确认不等于营销订阅。</p>
+              <p className="auth-legal-note"><strong>Draft legal documents</strong>The terms and privacy notice below are drafts and have not completed review. Accepting the terms does not subscribe you to marketing.</p>
               <div className="inline-links">
-                {terms && <PageLink href={terms} navigate={navigate} disabled={busy}>条款草案</PageLink>}
-                {privacy && <PageLink href={privacy} navigate={navigate} disabled={busy}>隐私告知草案</PageLink>}
+                {terms && <PageLink href={terms} navigate={navigate} disabled={busy}>Draft terms</PageLink>}
+                {privacy && <PageLink href={privacy} navigate={navigate} disabled={busy}>Draft privacy notice</PageLink>}
               </div>
-              <button type="button" className="text-button" disabled={busy || props.policyLoading} onClick={props.reloadPolicy}>重新读取注册规则</button>
-              <label className="check-field" htmlFor="accept-terms"><input id="accept-terms" name="accepted_terms" type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} required /><span>我已阅读并接受当前条款草案 {policy?.terms_version ?? ''}。</span></label>
+              <button type="button" className="text-button" disabled={busy || props.policyLoading} onClick={props.reloadPolicy}>Reload registration requirements</button>
+              <label className="check-field" htmlFor="accept-terms"><input id="accept-terms" name="accepted_terms" type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} required /><span>I have read and accept the current draft terms (version {policy?.terms_version ?? ''}).</span></label>
             </div>
           </>}
-          {isVerify && <p className="muted">邮件令牌已安全读取，不会显示在页面或浏览器地址中。</p>}
-          <button className="primary-button" type="submit">{action.pending ? '正在处理…' : isRegister ? '申请注册' : isReset ? '确认重置密码' : isVerify ? '确认验证邮箱' : isEmailOnly ? '申请邮件' : '登录'}</button>
+          {isVerify && <p className="muted auth-verification-note">Verification does not sign you in automatically. The email link token is never displayed on this page or in the address bar.</p>}
+          <button className="primary-button" type="submit">{action.pending ? 'Working…' : isRegister ? 'Create account' : isReset ? 'Confirm new password' : isVerify ? 'Verify email' : isEmailOnly ? 'Request email link' : 'Sign in'}</button>
         </fieldset>
       </form>}
       <ActionFeedback action={action} />
-      <nav className="auth-links" aria-label="账户操作">
-        {page !== 'login' && <PageLink href="/auth/login" navigate={navigate} disabled={busy}>返回登录</PageLink>}
+      {completed && isRegister && <p className="auth-completion-note">Follow the verification link if it arrives, then sign in. Need another link? Request a new verification email below.</p>}
+      <nav className="auth-links" aria-label="Account actions">
+        {page !== 'login' && <PageLink href="/auth/login" navigate={navigate} disabled={busy}>Back to sign in</PageLink>}
+        {completed && isRegister && <PageLink href="/auth/resend" navigate={navigate} disabled={busy}>Request another verification email</PageLink>}
         {page === 'login' && <>
-          <PageLink href="/auth/register" navigate={navigate} disabled={busy}>申请商家账户</PageLink>
-          <PageLink href="/auth/forgot" navigate={navigate} disabled={busy}>忘记密码</PageLink>
-          <PageLink href="/auth/resend" navigate={navigate} disabled={busy}>重新申请验证邮件</PageLink>
+          <PageLink href="/auth/register" navigate={navigate} disabled={busy}>Create an account</PageLink>
+          <PageLink href="/auth/forgot" navigate={navigate} disabled={busy}>Forgot password?</PageLink>
+          <PageLink href="/auth/resend" navigate={navigate} disabled={busy}>Request a verification email</PageLink>
         </>}
       </nav>
     </div>

@@ -1,0 +1,53 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Restaurant analytics", "version": "v1", "description": "服务端计数，不调用模型。PV不等于人数；入口点击是受控跳转请求，不承诺精确识别真人。本地数据local_test不算生产流量。"},
+  "paths": {
+    "/api/v1/restaurants/{restaurantId}/analytics": {
+      "get": {
+        "summary": "商家查询本餐厅流量与订位指标",
+        "security": [{"merchantSession": []}],
+        "parameters": [
+          {"name": "restaurantId", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "from", "in": "query", "description": "与to一起提供，含首尾；最多366日。未指定为餐厅当前时区最近30日。", "schema": {"type": "string", "format": "date"}},
+          {"name": "to", "in": "query", "schema": {"type": "string", "format": "date"}},
+          {"name": "namespace", "in": "query", "schema": {"type": "string", "enum": ["local_test", "production"]}}
+        ],
+        "responses": {
+          "200": {"description": "traffic.days仅列有数据的日，保留每行时区和fallback。reservations.created按创建时区日，scheduled按预约本地日；状态为查询时当前状态，人数包含全部请求，不代表到店人数。订阅和UV暂未实现，返回available=false和null，不补造0。", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Report"}}}},
+          "400": {"description": "未知参数或餐厅ID格式错误"}, "401": {"description": "未登录或会话失效"}, "403": {"description": "本人owner已撤销"},
+          "404": {"description": "餐厅不属于当前账号或不存在"}, "422": {"description": "日期/范围/namespace错误或计数超出安全整数"}, "503": {"description": "数据库或一致性读取失败"}
+        }
+      }
+    },
+    "/s/{slug}/events": {
+      "post": {
+        "summary": "平台同源客户端提交一个受控订位点击事件",
+        "description": "不是模型工具；网站不注入JS。仅接收成功站点GET响应的X-Site-Analytics-Context签名token，15分钟有效，绑定店/版本/修订/时区/namespace。必须精确站点Origin。服务端重核上下文；event_id UUID规范小写去重，同token+UUID重放不双算。不得把这个API与go/reserve跳转对同一动作双重上报。",
+        "parameters": [{"name": "slug", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "additionalProperties": false, "required": ["context", "event", "event_id"], "properties": {"context": {"type": "string", "maxLength": 2048}, "event": {"const": "reservation_click"}, "event_id": {"type": "string", "format": "uuid"}}}}}},
+        "responses": {"202": {"description": "recorded=true已入库；false表示去重/排除/上下文变更，不能声称新计数成功。"}, "400": {"description": "非JSON或未知查询"}, "403": {"description": "签名/Origin/过期错误"}, "409": {"description": "旧发布上下文"}, "422": {"description": "未知字段或事件/UUID错误"}, "429": {"description": "限流"}, "503": {"description": "采集失败"}}
+      }
+    },
+    "/s/{slug}/go/reserve": {"get": {"summary": "记录入口导航并跳到固定订位表单", "description": "GET成功303记一次reservation_click；HEAD、预取、机器人、隐私拒绝、显式测试、后台来源不计。未知参数拒绝，不接受任何跳转目标。", "parameters": [{"name": "slug", "in": "path", "required": true, "schema": {"type": "string"}}], "responses": {"303": {"description": "Location=/s/{slug}/reserve"}, "404": {"description": "未发布/未启用/非法参数"}}}}
+  },
+  "components": {
+    "securitySchemes": {"merchantSession": {"type": "apiKey", "in": "cookie", "name": "__Host-restaurant_session"}},
+    "schemas": {
+      "Count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+      "TrafficCounts": {"type": "object", "required": ["page_views", "reservation_clicks", "reservation_form_views"], "properties": {"page_views": {"$ref": "#/components/schemas/Count"}, "reservation_clicks": {"$ref": "#/components/schemas/Count"}, "reservation_form_views": {"$ref": "#/components/schemas/Count"}}},
+      "Statuses": {"type": "object", "required": ["pending", "confirmed", "declined", "cancelled"], "properties": {"pending": {"$ref": "#/components/schemas/Count"}, "confirmed": {"$ref": "#/components/schemas/Count"}, "declined": {"$ref": "#/components/schemas/Count"}, "cancelled": {"$ref": "#/components/schemas/Count"}}},
+      "ReservationCounts": {"type": "object", "required": ["requests", "party_size", "statuses"], "properties": {"requests": {"$ref": "#/components/schemas/Count"}, "party_size": {"$ref": "#/components/schemas/Count"}, "statuses": {"$ref": "#/components/schemas/Statuses"}}},
+      "ReservationGroup": {"type": "object", "required": ["days", "totals"], "properties": {"totals": {"$ref": "#/components/schemas/ReservationCounts"}, "days": {"type": "array", "items": {"allOf": [{"$ref": "#/components/schemas/ReservationCounts"}, {"type": "object", "required": ["date", "timezone"], "properties": {"date": {"type": "string", "format": "date"}, "timezone": {"type": "string"}}}]}}}},
+      "Report": {
+        "type": "object", "required": ["restaurant_id", "range", "namespace", "metric_version", "generated_at", "current_timezone", "timezone_fallback", "traffic", "reservations", "subscriptions", "visitors"],
+        "properties": {
+          "restaurant_id": {"type": "string"}, "range": {"type": "object", "required": ["from", "to"], "properties": {"from": {"type": "string", "format": "date"}, "to": {"type": "string", "format": "date"}}}, "namespace": {"enum": ["local_test", "production"]}, "metric_version": {"const": "v1"}, "generated_at": {"type": "string", "format": "date-time"}, "current_timezone": {"type": "string"}, "timezone_fallback": {"type": "boolean"},
+          "traffic": {"type": "object", "required": ["days", "totals", "semantics"], "properties": {"totals": {"$ref": "#/components/schemas/TrafficCounts"}, "semantics": {"type": "object"}, "days": {"type": "array", "items": {"allOf": [{"$ref": "#/components/schemas/TrafficCounts"}, {"type": "object", "required": ["date", "timezone", "timezone_fallback"], "properties": {"date": {"type": "string", "format": "date"}, "timezone": {"type": "string"}, "timezone_fallback": {"type": "boolean"}}}]}}}},
+          "reservations": {"type": "object", "required": ["scope", "status_semantics", "created", "scheduled"], "properties": {"scope": {"const": "all_restaurant_records"}, "status_semantics": {"const": "current_status_at_query_time"}, "created": {"$ref": "#/components/schemas/ReservationGroup"}, "scheduled": {"$ref": "#/components/schemas/ReservationGroup"}}},
+          "subscriptions": {"type": "object", "properties": {"available": {"const": false}, "active_count": {"type": "null"}, "reason": {"const": "SUBSCRIPTIONS_NOT_IMPLEMENTED"}}},
+          "visitors": {"type": "object", "properties": {"available": {"const": false}, "unique_visitors": {"type": "null"}, "reason": {"const": "UV_NOT_MEASURED"}}}
+        }
+      }
+    }
+  }
+}

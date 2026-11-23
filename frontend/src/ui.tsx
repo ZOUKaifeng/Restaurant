@@ -3,30 +3,30 @@ import type { MouseEvent, ReactNode } from 'react';
 import { ApiError } from './api';
 
 const errorMessages: Record<string, string> = {
-  UNAUTHENTICATED: '会话已失效，或邮箱与密码不匹配。请重新登录。',
-  EMAIL_VERIFICATION_REQUIRED: '请先验证邮箱。可重新申请验证邮件。',
-  ACCOUNT_UNAVAILABLE: '当前账号不可用，请联系服务维护人员。',
-  FORBIDDEN: '此操作未获授权，请检查会话和本地同源配置后重试。',
-  CSRF_INVALID: '安全校验已失效，已尝试更新。请重新确认并提交。',
-  CSRF_TOKEN_INVALID: '安全校验已失效，已尝试更新。请重新确认并提交。',
-  ORIGIN_FORBIDDEN: '请求来源不被允许，请检查本地 HTTPS 和后端来源配置。',
-  REQUEST_INVALID: '请求格式不正确，请检查填写内容。',
-  NOT_FOUND: '餐厅不存在，或不属于当前账户。',
-  CONFLICT: '请求与现有资料或资源状态冲突，请检查后再提交。',
-  IDEMPOTENCY_CONFLICT: '创建请求内容发生变化，请先核对列表，再开始新请求。',
-  IDEMPOTENCY_KEY_CONFLICT: '创建请求内容发生变化，请先核对列表，再开始新请求。',
-  ACTION_TOKEN_EXPIRED: '链接已失效或过期，请重新申请邮件。',
-  ACTION_TOKEN_INVALID: '链接无效，请重新申请邮件。',
-  REVISION_CONFLICT: '资料已在另一窗口更新。未保存内容仍在本页，请确认后刷新，不能直接覆盖。',
-  VALIDATION_FAILED: '部分字段未通过校验，请根据下方提示修改。',
-  PRECONDITION_REQUIRED: '未取得资料版本，请刷新后再保存。',
-  UNSUPPORTED_MEDIA_TYPE: '请求格式不受支持。请联系服务维护人员。',
-  RATE_LIMITED: '请求过于频繁，请稍后再试。',
-  SERVICE_UNAVAILABLE: '服务暂时不可用，未确认操作成功。请稍后重试。',
-  NETWORK_ERROR: '无法连接服务。未确认操作成功，请检查连接后重试。',
-  REQUEST_TIMEOUT: '请求超时，结果尚未确认。创建可重试同一请求；修改请先核对最新资料。',
-  RESPONSE_INVALID: '服务响应与接口契约不一致，不能继续使用这份资料。',
-  ETAG_INVALID: '未获得有效的资料版本，不能保存。请刷新或联系服务维护人员。',
+  UNAUTHENTICATED: 'Your session has expired, or your email and password do not match. Please sign in again.',
+  EMAIL_VERIFICATION_REQUIRED: 'Verify your email before signing in. You can request another verification email.',
+  ACCOUNT_UNAVAILABLE: 'This account is unavailable. Please contact support.',
+  FORBIDDEN: 'This action is not authorized. Check your session and the service configuration.',
+  CSRF_INVALID: 'The security check expired. A refresh was attempted. Review your request and submit it again.',
+  CSRF_TOKEN_INVALID: 'The security check expired. A refresh was attempted. Review your request and submit it again.',
+  ORIGIN_FORBIDDEN: 'This request origin is not allowed. Check HTTPS and the service origin configuration.',
+  REQUEST_INVALID: 'The request format is invalid. Check the information you entered.',
+  NOT_FOUND: 'This restaurant was not found or is not available to your account.',
+  CONFLICT: 'This request conflicts with the current information. Review it before submitting again.',
+  IDEMPOTENCY_CONFLICT: 'The creation request has changed. Check the list before starting a new request.',
+  IDEMPOTENCY_KEY_CONFLICT: 'The creation request has changed. Check the list before starting a new request.',
+  ACTION_TOKEN_EXPIRED: 'This email link is no longer valid or has expired. Request a new link.',
+  ACTION_TOKEN_INVALID: 'This email link is invalid. Request a new link.',
+  REVISION_CONFLICT: 'This information changed in another window. Your unsaved edits are still here. Review them before refreshing; they cannot overwrite the newer version.',
+  VALIDATION_FAILED: 'Some fields need attention. Review the details below.',
+  PRECONDITION_REQUIRED: 'The current information version is missing. Refresh before saving.',
+  UNSUPPORTED_MEDIA_TYPE: 'This request format is not supported. Please contact support.',
+  RATE_LIMITED: 'Too many requests. Please wait before trying again.',
+  SERVICE_UNAVAILABLE: 'The service is temporarily unavailable. The outcome is unknown. Check the current state before trying again.',
+  NETWORK_ERROR: 'The service could not be reached. The outcome is unknown. Check your connection and the current state before trying again.',
+  REQUEST_TIMEOUT: 'The request timed out. The outcome is unknown. Check the current state before trying again.',
+  RESPONSE_INVALID: 'The service returned an unexpected response. The outcome is unknown; this response cannot be used.',
+  ETAG_INVALID: 'A valid information version was not received. Refresh or contact support before saving.',
 };
 const statusMessages: Record<number, string> = {
   401: errorMessages.UNAUTHENTICATED,
@@ -38,54 +38,58 @@ const statusMessages: Record<number, string> = {
   422: errorMessages.VALIDATION_FAILED,
   428: errorMessages.PRECONDITION_REQUIRED,
   429: errorMessages.RATE_LIMITED,
+  500: errorMessages.SERVICE_UNAVAILABLE,
+  502: errorMessages.SERVICE_UNAVAILABLE,
   503: errorMessages.SERVICE_UNAVAILABLE,
+  504: errorMessages.SERVICE_UNAVAILABLE,
 };
 export const fieldLabels: Record<string, string> = {
-  email: '邮箱', password: '密码', new_password: '新密码', current_password: '当前密码',
-  display_name: '称呼', locale: '账户语言', terms_version: '条款版本', accepted_terms: '条款确认',
-  name: '餐厅名称', description: '餐厅简介', cuisine_label: '菜系', country_code: '国家代码',
-  region: '地区', city: '城市', address_line1: '地址第一行', address_line2: '地址第二行',
-  postal_code: '邮政编码', contact_email: '联系邮箱', phone: '联系电话', timezone: '时区',
-  currency_code: '币种代码', primary_locale: '餐厅主要语言', opening_hours: '周营业时间',
-  privacy_notice: '隐私告知', intervals: '营业时段', token: '邮件链接',
-  weekday: '星期', opens_at_local: '开始时间', closes_at_local: '结束时间',
-  closes_day_offset: '结束日期', accepts_requests: '申请规则', sort_order: '排序',
+  email: 'Email address', password: 'Password', new_password: 'New password', current_password: 'Current password',
+  display_name: 'Display name', locale: 'Language', terms_version: 'Terms version', accepted_terms: 'Terms acceptance',
+  name: 'Restaurant name', description: 'Restaurant description', cuisine_label: 'Cuisine', country_code: 'Country code',
+  region: 'State / region', city: 'City', address_line1: 'Address line 1', address_line2: 'Address line 2',
+  postal_code: 'Postal code', contact_email: 'Contact email', phone: 'Phone number', timezone: 'Time zone',
+  currency_code: 'Currency code', primary_locale: 'Restaurant language', opening_hours: 'Weekly opening hours',
+  privacy_notice: 'Privacy notice', intervals: 'Opening intervals', token: 'Email link',
+  weekday: 'Day of the week', opens_at_local: 'Opening time', closes_at_local: 'Closing time',
+  closes_day_offset: 'Closing day', accepts_requests: 'Request settings', sort_order: 'Sort order',
 };
 const detailMessages: Record<string, string> = {
-  REQUIRED: '请填写此项', MISSING: '请填写此项', TOO_SHORT: '长度不足', TOO_LONG: '超过长度上限',
-  MIN_LENGTH: '长度不足', MAX_LENGTH: '超过长度上限', INVALID: '格式或内容不正确',
-  INVALID_FORMAT: '格式不正确', FORMAT: '格式不正确', PATTERN: '格式不正确',
-  INVALID_EMAIL: '邮箱格式不正确', INVALID_PHONE: '请使用国际电话格式',
-  INVALID_TIMEZONE: '请填写真实 IANA 时区或 UTC', UNSUPPORTED_TIMEZONE: '此时区不受支持',
-  INVALID_CURRENCY: '请填写受支持的三位币种代码', UNSUPPORTED_CURRENCY: '此币种不受支持',
-  UNSUPPORTED_LOCALE: '此语言不受支持', INVALID_LOCALE: '语言代码不正确',
-  TERMS_VERSION_OUTDATED: '版本已更新，请重新读取并确认条款', TERMS_VERSION_MISMATCH: '版本已更新，请重新读取并确认条款',
-  WEAK_PASSWORD: '请选用更难猜测的长密码', PASSWORD_COMPROMISED: '请改用未泄露的密码',
-  INTERVAL_OVERLAP: '与另一时段重叠，包括跨午夜或周界', OVERLAP: '营业时段重叠',
-  INVALID_DURATION: '单段必须大于 0 且不超过 24 小时', TIMEZONE_REQUIRED: '请先保存餐厅时区',
-  OUT_OF_RANGE: '超出允许范围', ENUM: '取值不受支持', UNKNOWN_FIELD: '不允许修改此字段',
+  REQUIRED: 'This field is required', MISSING: 'This field is required', TOO_SHORT: 'Too short', TOO_LONG: 'Exceeds the length limit',
+  MIN_LENGTH: 'Too short', MAX_LENGTH: 'Exceeds the length limit', INVALID: 'Invalid format or value',
+  INVALID_FORMAT: 'Invalid format', FORMAT: 'Invalid format', PATTERN: 'Invalid format',
+  INVALID_EMAIL: 'Enter a valid email address', INVALID_PHONE: 'Use the international phone number format',
+  INVALID_TIMEZONE: 'Enter a valid IANA time zone or UTC', UNSUPPORTED_TIMEZONE: 'This time zone is not supported',
+  INVALID_CURRENCY: 'Enter a supported three-letter currency code', UNSUPPORTED_CURRENCY: 'This currency is not supported',
+  UNSUPPORTED_LOCALE: 'This language is not supported', INVALID_LOCALE: 'Invalid language code',
+  TERMS_VERSION_OUTDATED: 'The terms have changed. Reload and review them before accepting', TERMS_VERSION_MISMATCH: 'The terms have changed. Reload and review them before accepting',
+  WEAK_PASSWORD: 'Choose a longer password that is harder to guess', PASSWORD_COMPROMISED: 'Choose a password that has not appeared in a data breach',
+  INTERVAL_OVERLAP: 'Overlaps another interval, including across midnight or the week boundary', OVERLAP: 'Opening intervals overlap',
+  INVALID_DURATION: 'Each interval must be longer than 0 and no longer than 24 hours', TIMEZONE_REQUIRED: 'Save the restaurant time zone first',
+  OUT_OF_RANGE: 'Outside the allowed range', ENUM: 'This value is not supported', UNKNOWN_FIELD: 'This field cannot be changed',
 };
 function detailLabel(field: string) {
-  if (fieldLabels[field]) return fieldLabels[field];
+  if (Object.hasOwn(fieldLabels, field)) return fieldLabels[field];
   const match = /^intervals(?:\[(\d{1,2})\]|\.(\d{1,2}))\.(\w+)$/.exec(field);
-  if (match && fieldLabels[match[3]]) return `第 ${Number(match[1] ?? match[2]) + 1} 段 · ${fieldLabels[match[3]]}`;
-  return '填写内容';
+  if (match && Object.hasOwn(fieldLabels, match[3])) return `Interval ${Number(match[1] ?? match[2]) + 1} · ${fieldLabels[match[3]]}`;
+  return 'Entered information';
 }
 
 export function ErrorNotice({ error }: { error: unknown }) {
   if (!error) return null;
   const apiError = error instanceof ApiError ? error : null;
   const knownCode = apiError && Object.hasOwn(errorMessages, apiError.code) ? apiError.code : null;
-  const message = knownCode ? errorMessages[knownCode] : apiError ? statusMessages[apiError.status] ?? '请求未完成，请检查内容后重试。' : '操作未完成，请重试。';
+  const message = apiError?.status === 500 ? statusMessages[500] : knownCode ? errorMessages[knownCode] : apiError ? statusMessages[apiError.status] ?? 'The request could not be confirmed. Check the current state before trying again.' : 'The action could not be confirmed. Check the current state before trying again.';
+  const retryAfter = apiError?.retryAfter;
   return (
     <div className="notice error-notice" role="alert">
       <p>{message}</p>
-      {apiError && <p className="micro">错误代码：{knownCode ?? 'REQUEST_FAILED'}{apiError.status > 0 ? ` · HTTP ${apiError.status}` : ''}</p>}
+      {apiError && <p className="micro">Error code: {knownCode ?? 'REQUEST_FAILED'}{apiError.status > 0 ? ` · HTTP ${apiError.status}` : ''}</p>}
       {apiError && apiError.details.length > 0 && <ul>{apiError.details.map((detail, index) => {
         const code = detail.code.toUpperCase();
-        return <li key={index}>{detailLabel(detail.field)}：{Object.hasOwn(detailMessages, code) ? detailMessages[code] : '未通过校验，请检查格式和允许范围'}</li>;
+        return <li key={index}>{detailLabel(detail.field)}: {Object.hasOwn(detailMessages, code) ? detailMessages[code] : 'Check the format and allowed range'}</li>;
       })}</ul>}
-      {apiError?.retryAfter !== null && apiError?.retryAfter !== undefined && <p>请至少等待 {apiError.retryAfter} 秒后再试。</p>}
+      {typeof retryAfter === 'number' && Number.isInteger(retryAfter) && retryAfter >= 0 && retryAfter <= 999999 && <p>Wait at least {retryAfter} seconds before trying again.</p>}
     </div>
   );
 }
@@ -120,7 +124,7 @@ export function useAction(onBusyChange?: (busy: boolean) => void) {
 export function ActionFeedback({ action }: { action: Pick<ReturnType<typeof useAction>, 'pending' | 'error' | 'note'> }) {
   return <>
     <div aria-live="polite" aria-atomic="true">
-      {action.pending && <p className="micro loading-text" role="status">正在处理，请稍候…</p>}
+      {action.pending && <p className="micro loading-text" role="status">Working. Please wait…</p>}
       {action.note && <div className="notice"><p>{action.note}</p></div>}
     </div>
     <ErrorNotice error={action.error} />
@@ -141,12 +145,12 @@ export function PageLink({ href, navigate, disabled = false, children, className
   return <a href={href} onClick={follow} className={className} aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : undefined}>{children}</a>;
 }
 
-export const acceptedMessage = '已受理，邮件是否送达取决于发送状态。如该请求符合条件，系统将向对应邮箱发送说明；此结果不表示邮箱已验证。';
+export const acceptedMessage = 'Request accepted. Delivery depends on the email service; this does not verify your address.';
 
 export function LocaleSelect({ name, defaultValue, locales, id }: {
   name: string; defaultValue?: string; locales: string[]; id: string;
 }) {
-  return <select id={id} name={name} defaultValue={defaultValue && locales.includes(defaultValue) ? defaultValue : locales.includes('zh-CN') ? 'zh-CN' : locales[0]} required>
-    {locales.map((locale) => <option key={locale} value={locale}>{locale === 'zh-CN' ? '简体中文' : locale === 'en' ? '英语' : locale}</option>)}
+  return <select id={id} name={name} defaultValue={defaultValue && locales.includes(defaultValue) ? defaultValue : locales.includes('en') ? 'en' : locales[0]} required>
+    {locales.map((locale) => <option key={locale} value={locale}>{locale === 'zh-CN' ? 'Chinese (Simplified)' : locale === 'en' ? 'English' : locale}</option>)}
   </select>;
 }

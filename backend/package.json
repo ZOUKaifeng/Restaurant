@@ -11,6 +11,7 @@
     "start": "node dist/src/index.js",
     "migrate": "node --env-file=.env.local --import tsx scripts/migrate.ts",
     "migrate:production": "node dist/scripts/migrate.js",
+    "db:verify:supabase": "node --env-file=.env.supabase.local --import tsx scripts/verify-supabase.ts",
     "test": "node --env-file=.env.local --import tsx --test --test-concurrency=1 test/*.test.ts",
     "test:ci": "node --import tsx --test --test-concurrency=1 test/*.test.ts",
     "contract": "node scripts/validate-contract.mjs",
@@ -18,7 +19,9 @@
     "sites:start": "node dist/src/sites-index.js",
     "setup:local": "node scripts/setup-local.mjs",
     "assets:cleanup": "node --env-file=.env.local --import tsx scripts/cleanup-assets.ts",
-    "mail:once": "node --env-file=.env.local --import tsx src/mail-worker.ts --once"
+    "mail:once": "node --env-file=.env.local --import tsx src/mail-worker.ts --once",
+    "mail:start": "node dist/src/mail-worker.js",
+    "analytics:rebuild": "node --env-file=.env.local --import tsx scripts/rebuild-analytics.ts"
   },
   "dependencies": {
     "fastify": "^5.0.0", "@fastify/cookie": "^11.0.0", "@fastify/helmet": "^13.0.0", "@fastify/rate-limit": "^10.0.0",

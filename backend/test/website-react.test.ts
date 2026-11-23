@@ -31,7 +31,8 @@ function response(calls: WebsiteToolCall[], total = 3): WebsiteToolExchange {
 function executionState(messages: WebsiteToolMessage[]) {
   assert.ok(messages.length >= 4);
   assert.equal(messages[2]!.role, 'user');
-  const state = JSON.parse(messages[2]!.content!);
+  assert.equal(typeof messages[2]!.content, 'string');
+  const state = JSON.parse(messages[2]!.content as string);
   assert.ok(state.last_observations.every((item: Record<string, unknown>) =>
     Object.keys(item).every(key => ['tool_name', 'ok', 'code'].includes(key))));
   return state;

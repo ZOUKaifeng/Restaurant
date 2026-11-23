@@ -8,6 +8,8 @@ node_modules
 __pycache__/
 *.pyc
 **/dist/
+**/dist-*/
+/demos/
 **/.local/
 **/*.tsbuildinfo
 playwright-report/

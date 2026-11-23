@@ -1,0 +1,219 @@
+/* Four distinct compositions. Only the restaurant examples have colored themes. */
+.tf-marketing .tf-example-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 42px 28px; }
+.tf-marketing .tf-example-card .tf-cover { aspect-ratio: 1.5; }
+.tf-marketing .tf-card-design-note { margin-top: 10px; max-width: 46ch; color: #737373; font-size: 11px; line-height: 1.8; }
+.tf-marketing .tf-card-caption h3 { font-size: 17px; }
+.tf-marketing .tf-example-static { display: block; width: 100%; border: 1px solid #e3e2de; border-radius: 4px; background: #f5f5f2; overflow: hidden; }
+.tf-cover[data-design] { position: relative; container-type: inline-size; display: flex; flex-direction: column; width: 100%; aspect-ratio: 1.5; overflow: hidden; text-align: left; }
+.tf-cover[data-design] span { box-sizing: border-box; }
+.tf-cover[data-design='split-editorial'] { background: #f4f1e8; color: #3e5137; }
+.tf-cover[data-design='split-editorial'] .tf-cover-content { display: grid; grid-template-columns: .95fr 1.05fr; }
+.tf-cover[data-design='split-editorial'] .tf-cover-headline { font-family: Georgia, serif; }
+.tf-cover[data-design='poster-diner'] { background: #f4eecf; color: #080a06; font-family: Arial, sans-serif; }
+.tf-cover .tf-cover-diner-nav { display: flex; justify-content: space-between; padding: 3% 5% 1%; font: 600 1.45cqw/1.5 'Courier New', monospace; }
+.tf-cover .tf-cover-diner-brand { font: 900 19.5cqw/.82 Impact, 'Arial Narrow', Arial, sans-serif; letter-spacing: -.035em; padding: 1% 4% 3%; display: flex; justify-content: space-between; align-items: flex-start; }
+.tf-cover .tf-cover-diner-brand > span { font: 4.5cqw/1 Arial, sans-serif; }
+.tf-cover .tf-cover-diner-tiles { display: grid; grid-template-columns: 1.02fr .98fr; flex: 1; min-height: 0; padding: 0 4%; gap: 2%; }
+.tf-cover .tf-cover-diner-poster { position: relative; background: #de4528; padding: 9% 8%; display: flex; align-items: flex-start; }
+.tf-cover[data-design='poster-diner'] .tf-cover-headline { font: 900 7.5cqw/.92 Impact, 'Arial Narrow', Arial, sans-serif; letter-spacing: -.015em; max-width: 6ch; }
+.tf-cover .tf-cover-diner-stamp { position: absolute; bottom: 8%; right: 8%; border: 1px solid currentColor; border-radius: 50%; width: 9.5cqw; height: 9.5cqw; display: grid; place-content: center; text-align: center; font: 700 1.6cqw/1.2 'Courier New', monospace; transform: rotate(-13deg); }
+.tf-cover .tf-cover-diner-photo { overflow: hidden; }
+.tf-cover .tf-cover-diner-photo img { object-position: 64% center; }
+.tf-cover .tf-cover-diner-foot { font: 600 1.4cqw/1.5 'Courier New', monospace; padding: 2% 4%; }
+.tf-cover[data-design='immersive-night'] { background: #201a18; color: #f6eedc; }
+.tf-cover .tf-cover-night-photo, .tf-cover .tf-cover-night-shade { position: absolute; inset: 0; }
+.tf-cover .tf-cover-night-shade { background: linear-gradient(180deg, #100b0955, #100b0955 55%, #100b09a6); }
+.tf-cover .tf-cover-night-nav { position: relative; display: flex; justify-content: space-between; padding: 5%; align-items: center; }
+.tf-cover .tf-cover-night-nav > span:first-child { font: 400 4.3cqw/1 Georgia, serif; letter-spacing: .15em; }
+.tf-cover .tf-cover-night-nav > span:last-child { font: 1.4cqw/1.5 Arial, sans-serif; letter-spacing: .12em; }
+.tf-cover .tf-cover-night-title { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 8%; }
+.tf-cover[data-design='immersive-night'] .tf-cover-eyebrow { display: block; font: 1.5cqw/1.6 Arial, sans-serif; letter-spacing: .22em; margin-bottom: 4cqw; }
+.tf-cover[data-design='immersive-night'] .tf-cover-headline { font: italic 400 8.5cqw/1.02 Georgia, serif; letter-spacing: -.025em; }
+.tf-cover[data-design='immersive-night'] .tf-cover-headline > span { display: block; }
+.tf-cover[data-design='immersive-night'] .tf-cover-headline > span + span::before { content: none; }
+.tf-cover .tf-cover-night-cta { font: 1.35cqw/1.5 Arial, sans-serif; margin-top: 4cqw; border-bottom: 1px solid #e2d5b5; padding-bottom: 1cqw; letter-spacing: .1em; }
+.tf-cover .tf-cover-night-foot { position: relative; display: flex; justify-content: space-between; padding: 4% 5%; font: 1.5cqw/1.5 Georgia, serif; }
+.tf-cover .tf-cover-night-foot > span { font: 1.15cqw/1.5 Arial, sans-serif; letter-spacing: .08em; }
+.tf-cover[data-design='quiet-rail'] { flex-direction: row; background: #eeeae0; color: #3e4940; }
+.tf-cover .tf-cover-quiet-rail { display: flex; flex-direction: column; justify-content: space-between; width: 20%; border-right: 1px solid #c8c9be; padding: 6% 4%; }
+.tf-cover .tf-cover-quiet-rail > span:first-child { font: 400 3.8cqw/1.15 Arial, sans-serif; letter-spacing: .07em; }
+.tf-cover .tf-cover-quiet-rail > span:nth-child(2) { font: 1.5cqw/1.5 'Courier New', monospace; }
+.tf-cover .tf-cover-quiet-rail > span:last-child { font: 1.25cqw/1.5 'Courier New', monospace; }
+.tf-cover .tf-cover-quiet-main { display: flex; flex-direction: column; padding: 5% 6%; width: 80%; }
+.tf-cover .tf-cover-quiet-top { font: 1.35cqw/1.5 'Courier New', monospace; letter-spacing: .08em; }
+.tf-cover[data-design='quiet-rail'] .tf-cover-headline { font: 400 5.8cqw/1.1 Georgia, serif; margin: 4% 0 6%; letter-spacing: -.03em; }
+.tf-cover .tf-cover-quiet-photo { min-height: 0; flex: 1; width: 85%; align-self: flex-end; overflow: hidden; }
+.tf-cover .tf-cover-quiet-foot { display: flex; justify-content: space-between; font: 1.35cqw/1.5 'Courier New', monospace; padding-top: 4%; }
+.tf-cover[data-design][data-mobile] { aspect-ratio: .5; }
+.tf-cover[data-design='split-editorial'][data-mobile] .tf-cover-content { grid-template-columns: 1fr; grid-template-rows: 40% 60%; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-diner-nav { font-size: 3.3cqw; padding: 8% 5% 5%; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-diner-brand { font-size: 25cqw; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-diner-tiles { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-headline { font-size: 14cqw; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-diner-stamp { width: 20cqw; height: 20cqw; font-size: 3cqw; }
+.tf-cover[data-design='poster-diner'][data-mobile] .tf-cover-diner-foot { font-size: 3cqw; padding: 6% 5%; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-nav { padding: 10% 8%; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-nav > span:first-child { font-size: 10cqw; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-nav > span:last-child { display: none; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-headline { font-size: 17cqw; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-eyebrow { font-size: 3.5cqw; margin-bottom: 8cqw; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-cta { font-size: 3cqw; margin-top: 9cqw; padding-bottom: 3cqw; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-foot { font-size: 4cqw; padding: 8%; }
+.tf-cover[data-design='immersive-night'][data-mobile] .tf-cover-night-foot > span { display: none; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-rail { width: 26%; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-rail > span:first-child { font-size: 5.5cqw; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-rail > span:nth-child(2) { font-size: 3cqw; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-rail > span:last-child { font-size: 2.8cqw; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-main { width: 74%; padding: 12% 6%; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-top { font-size: 3cqw; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-headline { font-size: 10.5cqw; margin: 18% 0; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-photo { width: 100%; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-foot { font-size: 3cqw; padding-top: 12%; }
+.tf-cover[data-design='quiet-rail'][data-mobile] .tf-cover-quiet-foot > span { display: none; }
+
+/* Shared functional sections, with four genuinely different page compositions. */
+.tf-preview-dialog .tf-site[data-design] { container: tf-restaurant / inline-size; --tf-site-bg: #f4f1e8; --tf-site-ink: #3e5137; --tf-site-line: #d7dcce; font-family: Arial, sans-serif; }
+.tf-preview-dialog .tf-site[data-design] [hidden] { display: none; }
+.tf-preview-dialog .tf-site[data-design] figure { margin: 0; }
+.tf-preview-dialog .tf-site[data-design] img { object-fit: cover; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-header { padding: 24px 38px; gap: 20px; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-brand { font: 400 30px/1.1 Georgia, serif; letter-spacing: -.055em; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-section { padding: 60px 48px; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-eyebrow { font: 10px/1.7 Arial, sans-serif; letter-spacing: .12em; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-section h3 { font: 400 clamp(29px, 3.7cqw, 42px)/1.15 Georgia, serif; margin: 14px 0 22px; letter-spacing: -.03em; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-button { font: 11px/1.5 Arial, sans-serif; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-dishes { margin-top: 30px; }
+.tf-preview-dialog .tf-site[data-design] .tf-course-number { display: none; }
+.tf-preview-dialog .tf-site[data-design] .tf-dish-price { font: 12px/1.6 Arial, sans-serif; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-story img { min-width: 0; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-booking-notice { background: transparent; }
+.tf-preview-dialog .tf-site[data-design] .tf-site-footer { padding: 28px 48px; }
+.tf-editorial-opening { display: grid; grid-template-columns: 1fr 1.1fr; min-height: 410px; }
+.tf-editorial-opening > div { align-self: center; padding: 45px 38px; }
+.tf-preview-dialog .tf-editorial-opening h2 { font: 400 clamp(38px, 5.9cqw, 72px)/.98 Georgia, serif; letter-spacing: -.055em; margin: 26px 0; }
+.tf-editorial-opening h2 > span { display: block; }
+.tf-editorial-opening .tf-site-description { max-width: 28ch; line-height: 1.9; }
+.tf-editorial-opening .tf-site-button { margin-top: 29px; }
+.tf-editorial-opening > img { min-height: 410px; max-height: 490px; }
+
+/* Forma: an oversized poster and diner boards, not a bistro template. */
+.tf-preview-dialog .tf-site[data-design='poster-diner'] { --tf-site-bg: #f4eecf; --tf-site-ink: #080a06; --tf-site-line: #c5bfa2; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-header { padding: 14px 28px; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-header > .tf-site-brand { font: 700 12px/1.5 'Courier New', monospace; letter-spacing: .1em; text-transform: uppercase; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-header nav button { font-family: 'Courier New', monospace; font-size: 10px; text-transform: uppercase; }
+.tf-diner-masthead { display: flex; justify-content: space-between; align-items: flex-start; padding: 28px 28px 18px; font: 900 19cqw/.78 Impact, 'Arial Narrow', Arial, sans-serif; letter-spacing: -.035em; }
+.tf-diner-masthead > span { writing-mode: vertical-rl; font: 10px/1.5 'Courier New', monospace; letter-spacing: .1em; }
+.tf-diner-opening { display: grid; grid-template-columns: 1fr 1fr; padding: 10px 28px 22px; gap: 20px; }
+.tf-diner-poster { position: relative; background: #de4528; padding: 34px 30px; min-height: 355px; }
+.tf-preview-dialog .tf-diner-poster h2 { font: 900 clamp(43px, 7cqw, 80px)/.93 Impact, 'Arial Narrow', Arial, sans-serif; letter-spacing: -.015em; margin-top: 24px; }
+.tf-diner-poster h2 > span { display: block; }
+.tf-diner-poster .tf-site-button { margin-top: 30px; position: relative; z-index: 1; }
+.tf-diner-seal { position: absolute; right: 22px; bottom: 22px; width: 85px; height: 85px; display: grid; place-content: center; border: 1px solid currentColor; border-radius: 50%; transform: rotate(-12deg); font: 700 12px/1.4 'Courier New', monospace; text-align: center; }
+.tf-diner-food { min-height: 355px; position: relative; }
+.tf-diner-food img { min-height: 355px; }
+.tf-diner-food figcaption { position: absolute; bottom: 20px; left: 18px; padding: 8px 12px; background: #f4eecf; font: 700 10px/1.5 'Courier New', monospace; transform: rotate(-4deg); }
+.tf-diner-strip { display: flex; justify-content: space-evenly; align-items: center; gap: 16px; padding: 20px 28px; border-block: 1px solid var(--tf-site-ink); font: 700 11px/1.6 'Courier New', monospace; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-section h3 { font-family: Impact, 'Arial Narrow', Arial, sans-serif; font-size: clamp(34px, 5cqw, 54px); letter-spacing: .01em; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-dishes { gap: 16px; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-dishes li { padding: 22px; border: 1px solid var(--tf-site-ink); background: #f9f6e8; min-height: 110px; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-dishes h4 { font: 700 15px/1.4 'Courier New', monospace; text-transform: uppercase; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-visit { background: #de4528; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-visit dt { opacity: 1; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-story { grid-template-columns: 1.2fr 1fr; border: 0; gap: 32px; }
+.tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-booking { border-top: 2px solid var(--tf-site-ink); }
+
+/* June: full-bleed cinematic opening and an unhurried vertical course sequence. */
+.tf-preview-dialog .tf-site[data-design='immersive-night'] { --tf-site-bg: #201a18; --tf-site-ink: #f5ecd9; --tf-site-line: #584b40; }
+.tf-night-opening { position: relative; isolation: isolate; min-height: 640px; display: flex; flex-direction: column; }
+.tf-night-image, .tf-night-overlay { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; }
+.tf-night-image { object-position: center; }
+.tf-night-overlay { background: linear-gradient(180deg, #100b0999, #100b0944 42%, #100b09b3); }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-header { border-bottom: 0; background: transparent; padding: 30px 38px; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-header nav button { color: #f5ecd9; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-header > .tf-site-brand { font: 400 23px/1.3 Georgia, serif; letter-spacing: .025em; }
+.tf-night-copy { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 70px 32px 80px; }
+.tf-preview-dialog .tf-night-copy h2 { font: italic 400 clamp(45px, 8cqw, 90px)/1.04 Georgia, serif; letter-spacing: -.04em; margin: 29px 0 26px; }
+.tf-night-copy h2 > span { display: block; }
+.tf-preview-dialog .tf-night-copy > p:not(.tf-site-eyebrow) { font: 12px/1.9 Arial, sans-serif; max-width: 34ch; }
+.tf-night-copy .tf-site-button { margin-top: 31px; background: #201a1822; }
+.tf-night-bottom { display: flex; justify-content: space-between; align-items: center; padding: 24px 38px; font: 9px/1.5 Arial, sans-serif; letter-spacing: .17em; }
+.tf-preview-dialog .tf-night-bottom button { color: #f5ecd9; border: 0; background: transparent; padding: 5px; font: 10px/1.5 Arial, sans-serif; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-story { display: block; text-align: center; padding: 90px 20%; border: 0; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-story > img { display: none; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-story > div > p:last-child { margin: auto; max-width: 42ch; line-height: 2.1; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-menu { padding: 64px max(48px, 14%); border-block: 1px solid var(--tf-site-line); }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-dishes { grid-template-columns: 1fr; gap: 0; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-dishes li { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 24px; padding: 28px 0; align-items: start; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-course-number { display: block; color: #b9aa91; font: 10px/1.6 Arial, sans-serif; padding-top: 4px; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-dishes h4 { font: 400 22px/1.4 Georgia, serif; }
+.tf-night-closing { text-align: center; padding: 80px 30px; }
+.tf-preview-dialog .tf-night-closing p { font: italic 400 clamp(28px, 4cqw, 46px)/1.3 Georgia, serif; color: #cdb895; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-booking { background: #2b2320; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-booking-fields :is(input, select) { color-scheme: dark; border-color: #786a5a; }
+.tf-preview-dialog .tf-site[data-design='immersive-night'] :is(button, input, select, summary):focus-visible { outline-color: #f5ecd9; }
+
+/* Miso Room: navigation rail, asymmetry, and quiet single-column details. */
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] { --tf-site-bg: #eeeae0; --tf-site-ink: #3e4940; --tf-site-line: #c8c9be; }
+.tf-quiet-layout { display: grid; grid-template-columns: 148px minmax(0, 1fr); }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail { display: flex; flex-direction: column; justify-content: flex-start; align-items: stretch; padding: 36px 23px; border-right: 1px solid var(--tf-site-line); border-bottom: 0; gap: 42px; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail > .tf-site-brand { max-width: 5ch; font: 400 24px/1.25 Arial, sans-serif; text-transform: uppercase; letter-spacing: .1em; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail .tf-site-desktop-nav { flex-direction: column; align-items: stretch; gap: 12px; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail nav button { text-align: left; padding: 5px 0; min-height: 38px; margin: 0; border: 0; font: 10px/1.7 'Courier New', monospace; text-transform: uppercase; }
+.tf-rail-foot { margin-top: auto; font: 9px/1.9 'Courier New', monospace; color: #727b6f; }
+.tf-quiet-content { min-width: 0; }
+.tf-quiet-opening { padding: 55px 48px 35px; }
+.tf-preview-dialog .tf-quiet-heading h2 { font: 400 clamp(31px, 4.5cqw, 54px)/1.16 Georgia, serif; letter-spacing: -.035em; margin: 26px 0; }
+.tf-quiet-heading h2 > span { display: block; }
+.tf-preview-dialog .tf-quiet-heading > p:last-child { font: 11px/2 Arial, sans-serif; max-width: 30ch; }
+.tf-quiet-opening figure { width: 78%; margin: 39px 0 0 auto !important; }
+.tf-quiet-opening figure img { height: auto; aspect-ratio: 1.06; object-position: 65% center; }
+.tf-quiet-opening figcaption { margin-top: 13px; font: 9px/1.7 'Courier New', monospace; letter-spacing: .06em; }
+.tf-preview-dialog .tf-quiet-menu-link { display: flex; justify-content: space-between; width: 100%; border: 0; border-bottom: 1px solid var(--tf-site-line); padding: 26px 0 18px; background: transparent; font: 11px/1.5 'Courier New', monospace; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-section { padding: 42px 48px; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-dishes { grid-template-columns: 1fr; gap: 0; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-dishes h4 { font: 400 14px/1.6 Arial, sans-serif; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-story { display: block; padding-top: 60px; padding-bottom: 60px; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-story img { display: none; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-visit { grid-template-columns: 1fr; gap: 28px; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-booking-fields { grid-template-columns: 1fr; }
+.tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-footer { padding: 26px 48px; flex-wrap: wrap; }
+
+@container tf-restaurant (max-width: 640px) {
+  .tf-preview-dialog .tf-site[data-design] .tf-site-header { padding: 22px; }
+  .tf-preview-dialog .tf-site[data-design] .tf-site-section { padding: 38px 23px; }
+  .tf-editorial-opening { grid-template-columns: 1fr; }
+  .tf-editorial-opening > img { grid-row: 1; min-height: 0; height: 230px; }
+  .tf-editorial-opening > div { padding: 32px 23px 40px; }
+  .tf-preview-dialog .tf-editorial-opening h2 { font-size: clamp(36px, 12cqw, 64px); }
+  .tf-preview-dialog .tf-site[data-design] .tf-site-footer { padding: 25px 23px; }
+  .tf-diner-masthead { padding: 26px 20px 20px; font-size: 24cqw; }
+  .tf-diner-masthead > span { font-size: 8px; }
+  .tf-diner-opening { grid-template-columns: 1fr; padding: 0 20px 20px; gap: 18px; }
+  .tf-diner-poster { min-height: 315px; padding: 29px 24px; }
+  .tf-preview-dialog .tf-diner-poster h2 { font-size: clamp(43px, 14cqw, 77px); }
+  .tf-diner-seal { width: 65px; height: 65px; font-size: 10px; right: 15px; bottom: 19px; }
+  .tf-diner-food, .tf-diner-food img { min-height: 0; height: 270px; }
+  .tf-diner-strip { flex-wrap: wrap; padding: 17px 20px; font-size: 9px; gap: 8px 14px; }
+  .tf-preview-dialog .tf-site[data-design='poster-diner'] .tf-site-story { grid-template-columns: 1fr; }
+  .tf-night-opening { min-height: 605px; }
+  .tf-night-copy { padding: 46px 23px 65px; }
+  .tf-preview-dialog .tf-night-copy h2 { font-size: clamp(41px, 12.5cqw, 72px); }
+  .tf-night-bottom { padding: 20px 23px; font-size: 8px; letter-spacing: .06em; }
+  .tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-story { padding: 64px 26px; }
+  .tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-dishes li { gap: 13px; grid-template-columns: 22px minmax(0, 1fr) auto; }
+  .tf-preview-dialog .tf-site[data-design='immersive-night'] .tf-site-dishes h4 { font-size: 19px; }
+  .tf-quiet-layout { grid-template-columns: 1fr; }
+  .tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail { flex-direction: row; align-items: center; flex-wrap: wrap; border-right: 0; border-bottom: 1px solid var(--tf-site-line); gap: 16px; }
+  .tf-preview-dialog .tf-site[data-design='quiet-rail'] .tf-site-rail > .tf-site-brand { max-width: none; font-size: 19px; }
+  .tf-rail-foot { display: none; }
+  .tf-quiet-opening { padding: 36px 23px 12px; }
+  .tf-preview-dialog .tf-quiet-heading h2 { font-size: clamp(31px, 10.5cqw, 56px); }
+  .tf-quiet-opening figure { width: 87%; }
+}
+@media (max-width: 820px) {
+  .tf-marketing .tf-example-grid { grid-template-columns: 1fr; gap: 36px; }
+  .tf-marketing .tf-card-design-note { font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tf-cover[data-design] *, .tf-site[data-design] * { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
+}

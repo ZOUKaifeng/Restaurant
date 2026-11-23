@@ -1,0 +1,179 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "网站工作台与无 AI 内容更新", "version": "1.0.0", "description": "确定性保存并预览，不调用模型、不创建任务、不扣额度、不自动发布。未知来源 hash 为 NULL；响应不返回源 HTML/CSS、prompt、内部来源任务或存储信息。" },
+  "paths": {
+    "/api/v1/restaurants/{restaurantId}/website/workbench": {
+      "get": {
+        "operationId": "getWebsiteWorkbench",
+        "parameters": [
+          { "$ref": "#/components/parameters/RestaurantId" },
+          { "name": "base_version_id", "in": "query", "required": false, "schema": { "$ref": "#/components/schemas/ObjectId" }, "description": "显式按 ID 读取基版；默认发布版，否则最新版，不以兼容版本替换。其他 query 字段拒绝。" }
+        ],
+        "responses": {
+          "200": { "description": "只读工作台；无源码或未确认菜单仍允许读取", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteWorkbenchReport" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" },
+          "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/restaurants/{restaurantId}/website/content-previews": {
+      "post": {
+        "operationId": "createWebsiteContentPreview",
+        "description": "单事务保存 canonical 资料、营业段、已核对菜单及候选。最多 1 MiB。先返回同 key 同正文的原回执，再检查当前上下文。全字段拒绝未知属性；不接受 HTML 或 snapshot。",
+        "parameters": [
+          { "$ref": "#/components/parameters/RestaurantId" },
+          { "name": "Idempotency-Key", "in": "header", "required": true, "schema": { "type": "string", "pattern": "^[A-Za-z0-9_.:-]{16,128}$" } },
+          { "name": "X-CSRF-Token", "in": "header", "required": true, "schema": { "type": "string", "minLength": 1 } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteContentPreviewInput" } } } },
+        "responses": {
+          "200": { "description": "已保存候选或原幂等回执，changed=false 时返回基版；Idempotency-Replayed 表示是否重放。", "headers": { "Idempotency-Replayed": { "schema": { "type": "string", "enum": ["true", "false"] } } }, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteContentPreviewResult" } } } },
+          "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" }, "409": { "$ref": "#/components/responses/Error" }, "412": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/Error" }, "415": { "$ref": "#/components/responses/Error" }, "422": { "$ref": "#/components/responses/Error" }, "503": { "$ref": "#/components/responses/Error" }
+        }
+      }
+    },
+    "/api/v1/restaurants/{restaurantId}/website/versions": {
+      "get": {
+        "operationId": "getWebsiteContentVersions",
+        "parameters": [
+          { "$ref": "#/components/parameters/RestaurantId" },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "schema": { "type": "string", "maxLength": 1024 }, "description": "绑定当前用户、餐厅和 limit 的签名游标" }
+        ],
+        "responses": { "200": { "description": "分页版本元数据", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteContentVersionPage" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    },
+    "/api/v1/restaurants/{restaurantId}/website/versions/{versionId}": {
+      "get": {
+        "operationId": "getWebsiteContentVersion",
+        "parameters": [ { "$ref": "#/components/parameters/RestaurantId" }, { "name": "versionId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ObjectId" } } ],
+        "responses": { "200": { "description": "独立按 ID 读取，包含公开 hash 和源码状态，不包含源码", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/WebsiteContentVersion" } } } }, "400": { "$ref": "#/components/responses/Error" }, "401": { "$ref": "#/components/responses/Error" }, "403": { "$ref": "#/components/responses/Error" }, "404": { "$ref": "#/components/responses/Error" } }
+      }
+    }
+  },
+  "components": {
+    "parameters": { "RestaurantId": { "name": "restaurantId", "in": "path", "required": true, "schema": { "$ref": "#/components/schemas/ObjectId" } } },
+    "responses": { "Error": { "description": "统一错误；412 RESTAURANT_REVISION_CONFLICT；409 MENU_REVISION_CONFLICT / WEBSITE_SOURCE_MISSING / WEBSITE_SOURCE_INCOMPATIBLE / PUBLIC_CONTENT_HASH_CONFLICT / PUBLICATION_REVISION_CONFLICT / IDEMPOTENCY_CONFLICT / WEBSITE_JOB_BUSY / MENU_JOB_BUSY / RESTAURANT_UNAVAILABLE；422 MENU_CONFIRMATION_REQUIRED / MENU_EMPTY / MENU_DATA_INVALID / WEBSITE_CONTENT_INVALID 或字段校验；404 不存在或非本店所有者。错误不回显正文或源码。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } } },
+    "schemas": {
+      "ObjectId": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,64}$" },
+      "Revision": { "type": "integer", "minimum": 0, "maximum": 2147483646 },
+      "Hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "NullableId": { "anyOf": [ { "$ref": "#/components/schemas/ObjectId" }, { "type": "null" } ] },
+      "NullableHash": { "anyOf": [ { "$ref": "#/components/schemas/Hash" }, { "type": "null" } ] },
+      "RestaurantPatchInput": {
+        "type": "object", "additionalProperties": false, "minProperties": 1,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 150 },
+          "description": { "type": ["string", "null"], "maxLength": 2000 },
+          "cuisine_label": { "type": ["string", "null"], "maxLength": 100 },
+          "country_code": { "type": ["string", "null"], "pattern": "^[A-Z]{2}$" },
+          "region": { "type": ["string", "null"], "maxLength": 100 }, "city": { "type": ["string", "null"], "maxLength": 100 },
+          "address_line1": { "type": ["string", "null"], "maxLength": 200 }, "address_line2": { "type": ["string", "null"], "maxLength": 200 },
+          "postal_code": { "type": ["string", "null"], "maxLength": 32 },
+          "contact_email": { "type": ["string", "null"], "format": "email", "minLength": 3, "maxLength": 254 },
+          "phone": { "type": ["string", "null"], "minLength": 8, "maxLength": 16, "pattern": "^\\+[1-9][0-9]{6,14}$" },
+          "timezone": { "type": ["string", "null"], "minLength": 1, "maxLength": 64 },
+          "currency_code": { "type": ["string", "null"], "pattern": "^[A-Z]{3}$" },
+          "primary_locale": { "type": "string", "enum": ["en", "zh-CN"] }
+        }
+      },
+      "EditableRestaurant": {
+        "allOf": [ { "$ref": "#/components/schemas/RestaurantPatchInput" } ], "type": "object",
+        "required": ["name", "description", "cuisine_label", "country_code", "region", "city", "address_line1", "address_line2", "postal_code", "contact_email", "phone", "timezone", "currency_code", "primary_locale"],
+        "properties": { "name": {}, "description": {}, "cuisine_label": {}, "country_code": {}, "region": {}, "city": {}, "address_line1": {}, "address_line2": {}, "postal_code": {}, "contact_email": {}, "phone": {}, "timezone": {}, "currency_code": {}, "primary_locale": {} }
+      },
+      "OpeningInterval": {
+        "type": "object", "additionalProperties": false,
+        "required": ["weekday", "opens_at_local", "closes_at_local", "closes_day_offset", "accepts_requests", "sort_order"],
+        "properties": {
+          "weekday": { "type": "integer", "minimum": 1, "maximum": 7 },
+          "opens_at_local": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+          "closes_at_local": { "type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$" },
+          "closes_day_offset": { "type": "integer", "enum": [0, 1] }, "accepts_requests": { "type": "boolean" },
+          "sort_order": { "type": "integer", "minimum": 0, "maximum": 20 }
+        }
+      },
+      "OpeningHours": { "type": "array", "maxItems": 21, "items": { "$ref": "#/components/schemas/OpeningInterval" } },
+      "MenuItem": {
+        "type": "object", "additionalProperties": false, "required": ["name", "description", "price_text", "review_note"],
+        "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": { "type": ["string", "null"], "minLength": 1, "maxLength": 1000 }, "price_text": { "type": ["string", "null"], "minLength": 1, "maxLength": 80 }, "review_note": { "type": ["string", "null"], "minLength": 1, "maxLength": 500 } }
+      },
+      "MenuCategory": {
+        "type": "object", "additionalProperties": false, "required": ["name", "items"],
+        "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 150 }, "items": { "type": "array", "minItems": 1, "maxItems": 80, "items": { "$ref": "#/components/schemas/MenuItem" } } }
+      },
+      "MenuData": {
+        "type": "object", "additionalProperties": false, "required": ["categories", "warnings"],
+        "description": "完整 canonical 菜单，保留人工备注及警告；总菜品不超过 80，服务端进一步语义验证。人工确认不能提交空菜单。",
+        "properties": { "categories": { "type": "array", "maxItems": 20, "items": { "$ref": "#/components/schemas/MenuCategory" } }, "warnings": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 500 } } }
+      },
+      "EditableMenu": {
+        "type": "object", "additionalProperties": false, "required": ["revision", "status", "data"],
+        "properties": { "revision": { "$ref": "#/components/schemas/Revision" }, "status": { "type": "string", "enum": ["empty", "draft", "confirmed"] }, "data": { "$ref": "#/components/schemas/MenuData" } }
+      },
+      "WebsiteEditableContent": {
+        "type": "object", "additionalProperties": false, "required": ["restaurant", "restaurant_revision", "opening_hours", "menu"],
+        "properties": { "restaurant": { "$ref": "#/components/schemas/EditableRestaurant" }, "restaurant_revision": { "$ref": "#/components/schemas/Revision" }, "opening_hours": { "$ref": "#/components/schemas/OpeningHours" }, "menu": { "$ref": "#/components/schemas/EditableMenu" } }
+      },
+      "WebsiteContentVersion": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "restaurant_id", "version_number", "summary", "created_at", "checksum", "asset_ids", "source_status", "origin", "base_version_id", "public_content_hash"],
+        "properties": {
+          "id": { "$ref": "#/components/schemas/ObjectId" }, "restaurant_id": { "$ref": "#/components/schemas/ObjectId" },
+          "version_number": { "type": "integer", "minimum": 1, "maximum": 2147483647 }, "summary": { "type": "string" }, "created_at": { "type": "string", "format": "date-time" },
+          "checksum": { "$ref": "#/components/schemas/Hash" }, "asset_ids": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "pattern": "^ast_[A-Za-z0-9_-]{24}$" } },
+          "source_status": { "type": "string", "enum": ["available", "missing", "incompatible"] }, "origin": { "type": "string", "enum": ["generation", "content_refresh", "legacy"] },
+          "base_version_id": { "$ref": "#/components/schemas/NullableId" }, "public_content_hash": { "$ref": "#/components/schemas/NullableHash" }
+        }
+      },
+      "NullableVersion": { "anyOf": [ { "$ref": "#/components/schemas/WebsiteContentVersion" }, { "type": "null" } ] },
+      "WebsiteContentDifference": {
+        "type": "object", "additionalProperties": false, "required": ["field", "label", "before", "after"],
+        "properties": { "field": { "type": "string", "enum": ["name", "description", "cuisine", "address", "contact", "timezone", "locale", "currency", "hours", "menu", "reservation"] }, "label": { "type": "string" }, "before": { "type": "string" }, "after": { "type": "string" } }
+      },
+      "Differences": { "type": "array", "items": { "$ref": "#/components/schemas/WebsiteContentDifference" } },
+      "Publication": {
+        "type": "object", "additionalProperties": false, "required": ["revision", "published_version_id", "slug", "url", "deployment_mode"],
+        "properties": { "revision": { "$ref": "#/components/schemas/Revision" }, "published_version_id": { "$ref": "#/components/schemas/NullableId" }, "slug": { "type": ["string", "null"] }, "url": { "type": ["string", "null"], "format": "uri" }, "deployment_mode": { "type": "string", "enum": ["local", "unconfigured"] } }
+      },
+      "WebsiteWorkbenchReport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["restaurant_id", "generated_at", "publication", "published_version", "editing_version", "latest_version", "content", "current_public_content_hash", "differences", "blockers", "model_configured", "ai_usage_mode"],
+        "properties": {
+          "restaurant_id": { "$ref": "#/components/schemas/ObjectId" }, "generated_at": { "type": "string", "format": "date-time" }, "publication": { "$ref": "#/components/schemas/Publication" },
+          "published_version": { "$ref": "#/components/schemas/NullableVersion" }, "editing_version": { "$ref": "#/components/schemas/NullableVersion" }, "latest_version": { "$ref": "#/components/schemas/NullableVersion" },
+          "content": { "$ref": "#/components/schemas/WebsiteEditableContent" }, "current_public_content_hash": { "$ref": "#/components/schemas/Hash" }, "differences": { "$ref": "#/components/schemas/Differences" },
+          "saved_differences": { "$ref": "#/components/schemas/Differences", "description": "基版快照与当前编辑候选快照之间的不可变差异，可用于刷新后恢复审核；不是当前未同步资料差异。" },
+          "blockers": { "type": "array", "uniqueItems": true, "items": { "type": "string", "enum": ["WEBSITE_BASE_REQUIRED", "WEBSITE_SOURCE_MISSING", "WEBSITE_SOURCE_INCOMPATIBLE", "MENU_UNCONFIRMED", "RESTAURANT_UNAVAILABLE", "WEBSITE_JOB_BUSY", "MENU_JOB_BUSY"] } },
+          "model_configured": { "type": "boolean" }, "ai_usage_mode": { "type": "string", "const": "observation" }
+        }
+      },
+      "WebsiteContentPreviewInput": {
+        "type": "object", "additionalProperties": false,
+        "required": ["base_version_id", "expected_restaurant_revision", "expected_menu_revision", "expected_public_content_hash", "expected_publication_revision"],
+        "properties": {
+          "base_version_id": { "$ref": "#/components/schemas/ObjectId" }, "expected_restaurant_revision": { "$ref": "#/components/schemas/Revision" }, "expected_menu_revision": { "$ref": "#/components/schemas/Revision" },
+          "expected_public_content_hash": { "$ref": "#/components/schemas/Hash" }, "expected_publication_revision": { "$ref": "#/components/schemas/Revision" },
+          "restaurant_patch": { "$ref": "#/components/schemas/RestaurantPatchInput" }, "opening_hours": { "$ref": "#/components/schemas/OpeningHours" },
+          "menu_data": { "$ref": "#/components/schemas/MenuData" }, "menu_review_confirmed": { "type": "boolean", "const": true }
+        },
+        "dependentRequired": { "menu_data": ["menu_review_confirmed"], "menu_review_confirmed": ["menu_data"] }
+      },
+      "WebsiteContentPreviewResult": {
+        "type": "object", "additionalProperties": false,
+        "required": ["version", "content", "public_content_hash", "base_publication_revision", "differences", "changed", "ai_called", "warnings"],
+        "properties": { "version": { "$ref": "#/components/schemas/WebsiteContentVersion" }, "content": { "$ref": "#/components/schemas/WebsiteEditableContent" }, "public_content_hash": { "$ref": "#/components/schemas/Hash" }, "base_publication_revision": { "$ref": "#/components/schemas/Revision" }, "differences": { "$ref": "#/components/schemas/Differences" }, "changed": { "type": "boolean" }, "ai_called": { "type": "boolean", "const": false }, "warnings": { "type": "array", "items": { "type": "string", "enum": ["MENU_FILE_MAY_BE_OUTDATED"] }, "uniqueItems": true } }
+      },
+      "WebsiteContentVersionPage": {
+        "type": "object", "additionalProperties": false, "required": ["items", "has_more", "next_cursor"],
+        "properties": { "items": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/WebsiteContentVersion" } }, "has_more": { "type": "boolean" }, "next_cursor": { "type": ["string", "null"], "maxLength": 1024 } }
+      },
+      "Error": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "request_id", "details"],
+        "properties": { "code": { "type": "string" }, "message": { "type": "string" }, "request_id": { "type": "string" }, "details": { "type": "array", "maxItems": 50, "items": { "type": "object", "additionalProperties": false, "required": ["field", "code"], "properties": { "field": { "type": "string", "maxLength": 128 }, "code": { "type": "string" } } } } }
+      }
+    }
+  }
+}

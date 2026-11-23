@@ -1,0 +1,231 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "账单目录与本人观测概览",
+    "version": "billing-v1",
+    "description": "仅提供只读目录与已验证商家本人概览。未实现 PayPal、结账、跳转或支付受理，GET 不授予或消费额度。本人已显式登记且当前有效的自然月测试授额仅以 development_test 积分展示，月底到期不续发；未配置账户保持原 null 结构。所有 payment_enabled 固定为 false；拟定积分和 Unlimited 套餐不构成当前权限。禁止所有查询参数，包括账户、餐厅、套餐和价格 ID。"
+  },
+  "paths": {
+    "/api/v1/billing/catalog": {
+      "get": {
+        "operationId": "getBillingCatalog",
+        "summary": "公开读取当前未退役的标准套餐版本与月年价格",
+        "description": "无需会话，不依赖初始 me 请求。种子优惠仅提供固定全局说明，不公开种子价格 ID、资格、审批或账户信息。站点上限 null 表示未确认，不表示无限。",
+        "security": [],
+        "parameters": [],
+        "responses": {
+          "200": { "description": "只读目录；即使数据库价格激活也不启用支付", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingCatalog" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/billing/overview": {
+      "get": {
+        "operationId": "getBillingOverview",
+        "summary": "已验证会话的本人账单观测概览",
+        "description": "真实会话认证后，在 REPEATABLE READ 事务中锁定并重新认证用户与会话。按 owner_user_id 直接查询，账户缺失返回 null，不创建账户或修改用户。优先返回最新未终止订阅，否则展示最后已取消或过期记录；不据此授予权限。种子审批与订阅、已付款状态相互独立。测试积分仅通过同一 REPEATABLE READ 事务对本人 account.id 调用一次 readCalendarQuota 读取；不会从普通 trial/paid、历史累计或目录拟定积分推断余额，不伪造 subscription 或 price。",
+        "security": [{ "merchantSession": [] }],
+        "parameters": [],
+        "responses": {
+          "200": { "description": "本人观测状态，完整保留所有 null 字段", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingOverview" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "422": { "$ref": "#/components/responses/Overflow" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "merchantSession": { "type": "apiKey", "in": "cookie", "name": "__Host-restaurant_session", "description": "仅接受真实已验证且未撤销、未过期的商家会话；不接受 Bearer 或调用者传入身份。" }
+    },
+    "responses": {
+      "BadRequest": { "description": "不接受任何查询参数", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthenticated": { "description": "未登录、会话失效或用户未验证", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Overflow": { "description": "422 AI_USAGE_OVERFLOW：readCalendarQuota 的 raw token 投影越过安全整数范围或不守恒；不会将无效值舍入兑换为积分。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unavailable": { "description": "数据库、并发序列化或安全整数转换不可用；必须先安装正式 013 迁移，不用缺表guard伪装未配置，不返回部分数据或假成功", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "BillingPlanCode": { "type": "string", "enum": ["maintain", "build", "unlimited"] },
+      "BillingInterval": { "type": "string", "enum": ["month", "year"] },
+      "BillingVersionStatus": { "type": "string", "enum": ["draft", "active", "retired"] },
+      "SafeInteger": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+      "PositiveSafeInteger": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+      "NullableSafeInteger": { "type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991 },
+      "BillingTimestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}([0-9]{3})?Z$" },
+      "NullableBillingTimestamp": { "anyOf": [{ "$ref": "#/components/schemas/BillingTimestamp" }, { "type": "null" }] },
+      "BillingPrice": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "interval", "amount_minor", "currency", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "interval": { "$ref": "#/components/schemas/BillingInterval" },
+          "amount_minor": { "$ref": "#/components/schemas/SafeInteger" },
+          "currency": { "const": "USD", "type": "string" },
+          "status": { "$ref": "#/components/schemas/BillingVersionStatus" }
+        }
+      },
+      "BillingAi": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "monthly_credits", "tokens_per_credit", "allocation_status", "grant_schedule"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["limited", "unlimited"] },
+          "monthly_credits": { "$ref": "#/components/schemas/NullableSafeInteger" },
+          "tokens_per_credit": { "$ref": "#/components/schemas/PositiveSafeInteger" },
+          "allocation_status": { "type": "string", "enum": ["proposed", "confirmed"], "description": "如实返回目录确认状态，仍不激活或授予实际额度。" },
+          "grant_schedule": { "type": "string", "enum": ["unconfirmed", "service_month"], "description": "如实返回目录发放规则状态，本批不产生额度授予。" }
+        }
+      },
+      "BillingPlan": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "code", "name", "version", "status", "ai", "hosted_site_limit", "prices"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "code": { "$ref": "#/components/schemas/BillingPlanCode" },
+          "name": { "type": "string", "minLength": 1 },
+          "version": { "$ref": "#/components/schemas/PositiveSafeInteger" },
+          "status": { "$ref": "#/components/schemas/BillingVersionStatus" },
+          "ai": { "$ref": "#/components/schemas/BillingAi" },
+          "hosted_site_limit": { "$ref": "#/components/schemas/NullableSafeInteger", "description": "null 仅表示上限未确认，不能声称站点无限。" },
+          "prices": { "type": "array", "items": { "$ref": "#/components/schemas/BillingPrice" } }
+        }
+      },
+      "BillingCreditPack": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "name", "credits", "amount_minor", "currency", "tokens_per_credit", "validity_days", "validity_policy", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "credits": { "$ref": "#/components/schemas/PositiveSafeInteger" },
+          "amount_minor": { "$ref": "#/components/schemas/SafeInteger" },
+          "currency": { "type": "string", "const": "USD" },
+          "tokens_per_credit": { "$ref": "#/components/schemas/PositiveSafeInteger" },
+          "validity_days": { "type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991 },
+          "validity_policy": { "type": "string", "enum": ["unconfirmed", "days", "never_expires"] },
+          "status": { "$ref": "#/components/schemas/BillingVersionStatus" }
+        }
+      },
+      "BillingSeedOffer": {
+        "type": "object", "additionalProperties": false,
+        "required": ["plan_code", "amount_minor", "interval", "requires_approval", "duration_status", "purchasable"],
+        "properties": {
+          "plan_code": { "type": "string", "const": "unlimited" },
+          "amount_minor": { "type": "integer", "const": 3990 },
+          "interval": { "type": "string", "const": "month" },
+          "requires_approval": { "type": "boolean", "const": true },
+          "duration_status": { "type": "string", "const": "unconfirmed" },
+          "purchasable": { "type": "boolean", "const": false }
+        }
+      },
+      "BillingCatalog": {
+        "type": "object", "additionalProperties": false,
+        "required": ["schema_version", "billing_model", "currency", "payment_enabled", "plans", "credit_packs", "addons_status", "seed_offer"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "billing-catalog-v1" },
+          "billing_model": { "type": "string", "const": "subscription_with_credit_addons" },
+          "currency": { "type": "string", "const": "USD" },
+          "payment_enabled": { "type": "boolean", "const": false },
+          "plans": { "type": "array", "items": { "$ref": "#/components/schemas/BillingPlan" } },
+          "credit_packs": { "type": "array", "items": { "$ref": "#/components/schemas/BillingCreditPack" } },
+          "addons_status": { "type": "string", "enum": ["not_configured", "draft"] },
+          "seed_offer": { "$ref": "#/components/schemas/BillingSeedOffer" }
+        }
+      },
+      "BillingAccount": {
+        "type": "object", "additionalProperties": false, "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["active", "suspended", "closed"] }
+        }
+      },
+      "BillingSubscriptionView": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "plan_id", "plan_code", "plan_name", "price_id", "interval", "amount_minor", "currency", "status", "period_start", "period_end", "paid_through", "cancel_requested_at", "revision"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "plan_id": { "type": "string", "minLength": 1 },
+          "plan_code": { "$ref": "#/components/schemas/BillingPlanCode" },
+          "plan_name": { "type": "string", "minLength": 1 },
+          "price_id": { "type": "string", "minLength": 1 },
+          "interval": { "$ref": "#/components/schemas/BillingInterval" },
+          "amount_minor": { "$ref": "#/components/schemas/SafeInteger" },
+          "currency": { "type": "string", "const": "USD" },
+          "status": { "type": "string", "enum": ["incomplete", "active", "past_due", "suspended", "cancelled", "expired"] },
+          "period_start": { "$ref": "#/components/schemas/NullableBillingTimestamp" },
+          "period_end": { "$ref": "#/components/schemas/NullableBillingTimestamp" },
+          "paid_through": { "$ref": "#/components/schemas/NullableBillingTimestamp" },
+          "cancel_requested_at": { "$ref": "#/components/schemas/NullableBillingTimestamp" },
+          "revision": { "$ref": "#/components/schemas/PositiveSafeInteger" }
+        }
+      },
+      "AiCreditTimestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$" },
+      "AiCreditPeriod": {
+        "description": "与用量接口同一 helper 的显式 development_test 授额周期；UTC 自然月 starts_at<=created_at<ends_at，ends_at 为下一月首日，starts_at<=granted_at<ends_at。PG 六位微秒原样返回；月底到期，不续发，不代表订阅或已付款。",
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "starts_at", "ends_at", "granted_at", "timezone", "origin", "tokens_per_credit", "auto_renew"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^aqp_[A-Za-z0-9_-]{24}$" },
+          "starts_at": { "type": "string", "$ref": "#/components/schemas/AiCreditTimestamp", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-01T00:00:00\\.000000Z$" },
+          "ends_at": { "type": "string", "$ref": "#/components/schemas/AiCreditTimestamp", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-01T00:00:00\\.000000Z$" },
+          "granted_at": { "$ref": "#/components/schemas/AiCreditTimestamp" },
+          "timezone": { "const": "UTC" }, "origin": { "const": "development_test" },
+          "tokens_per_credit": { "const": 100 }, "auto_renew": { "const": false }
+        }
+      },
+      "CreditAmount": { "type": "number", "minimum": 0, "maximum": 90071992547409.9, "description": "仅用于展示：helper 校验后的 raw token 安全整数除以 100，不按整积分取整、不改变 SQL 精度或货币价格。客户端可格式化到两位小数，不能用于账本计算。" },
+      "BillingCreditsObservation": {
+        "description": "仅显式登记且当前有效的自然月测试授额返回 development_test；010 普通 trial/paid 不算配置。available/reserved/consumed/granted 单位为积分（100 tokens=1 credit），来自同事务同 account 的 readCalendarQuota。负余额允许且 enforced 固定 false；这是非金钱测试积分，不代表付款或套餐权益。",
+        "oneOf": [
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["status", "enforced", "available", "reserved", "consumed"],
+            "properties": {
+              "status": { "type": "string", "const": "not_configured" }, "enforced": { "type": "boolean", "const": false },
+              "available": { "type": "null" }, "reserved": { "type": "null" }, "consumed": { "type": "null" }
+            }
+          },
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["status", "enforced", "available", "reserved", "consumed", "granted", "period"],
+            "properties": {
+              "status": { "type": "string", "const": "development_test" }, "enforced": { "type": "boolean", "const": false },
+              "available": { "type": "number", "minimum": -90071992547409.9, "maximum": 90071992547409.9 },
+              "reserved": { "$ref": "#/components/schemas/CreditAmount" }, "consumed": { "$ref": "#/components/schemas/CreditAmount" },
+              "granted": { "$ref": "#/components/schemas/CreditAmount" }, "period": { "$ref": "#/components/schemas/AiCreditPeriod" }
+            }
+          }
+        ]
+      },
+      "BillingOverview": {
+        "type": "object", "additionalProperties": false,
+        "required": ["schema_version", "mode", "payment_enabled", "account", "subscription", "seed_eligibility", "credits", "addons_status", "generated_at"],
+        "properties": {
+          "schema_version": { "type": "string", "const": "billing-overview-v1" },
+          "mode": { "type": "string", "const": "observation" },
+          "payment_enabled": { "type": "boolean", "const": false },
+          "account": { "anyOf": [{ "$ref": "#/components/schemas/BillingAccount" }, { "type": "null" }] },
+          "subscription": { "anyOf": [{ "$ref": "#/components/schemas/BillingSubscriptionView" }, { "type": "null" }] },
+          "seed_eligibility": { "type": "string", "enum": ["not_granted", "pending", "approved", "ended"], "description": "仅本人有界种子资格；approved 不表示付款或已开通 Unlimited。" },
+          "credits": { "$ref": "#/components/schemas/BillingCreditsObservation" },
+          "addons_status": { "type": "string", "enum": ["not_configured", "draft"] },
+          "generated_at": { "$ref": "#/components/schemas/BillingTimestamp" }
+        }
+      },
+      "ErrorDetail": {
+        "type": "object", "additionalProperties": false, "required": ["field", "code"],
+        "properties": { "field": { "type": "string" }, "code": { "type": "string" } }
+      },
+      "Error": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "request_id", "details"],
+        "properties": {
+          "code": { "type": "string", "enum": ["REQUEST_INVALID", "UNAUTHENTICATED", "AI_USAGE_OVERFLOW", "SERVICE_UNAVAILABLE"] },
+          "message": { "type": "string" },
+          "request_id": { "type": "string", "format": "uuid" },
+          "details": { "type": "array", "items": { "$ref": "#/components/schemas/ErrorDetail" } }
+        }
+      }
+    }
+  }
+}

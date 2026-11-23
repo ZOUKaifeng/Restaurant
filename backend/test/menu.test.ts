@@ -9,7 +9,7 @@ import sharp from 'sharp';
 import { PDFDocument } from 'pdf-lib';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
-import { assertAppDatabase, createPool, id, transaction } from '../src/db.js';
+import { assertAppDatabase, id, transaction } from '../src/db.js';
 import { migrate } from '../scripts/migrate.js';
 import { FLOW_COOKIE, SESSION_COOKIE } from '../src/security.js';
 import { registerMenus } from '../src/menu.js';
@@ -18,21 +18,16 @@ import { readConfirmedMenu, readMenuDraft, type MenuJob, type MenuState } from '
 import { normalizeMenuData, type MenuData } from '../src/menu-data.js';
 import { runWebsiteJobs, type WebsiteJobClient } from '../src/website-worker.js';
 import type { WebsiteJob, WebsiteVersion } from '../src/website-access.js';
+import { websiteContentHash } from '../src/website-source.js';
 import type { Config } from '../src/config.js';
+import type { AiCallTotals, AiTokenUsage } from '../src/ai-usage-types.js';
 
 let app: FastifyInstance, pool: Pool, owner: Pool, config: Config, root: string;
 let sequence = 0;
-const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'ai_calendar_credit_grants,website_content_actions,website_version_sources,billing_subscriptions,billing_offer_grants,ai_quota_ledger,ai_quota_periods,ai_model_calls,billing_accounts,analytics_events,analytics_daily,website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 const password = '菜单测试-Valid-Password-2026!';
 interface Actor { email: string; cookie: string; csrf: string }
-function testUrl(key: string, role: string): string {
-  const value = process.env[key];
-  assert.ok(value, `必须提供真实 ${key}，禁止跳过或连接开发数据库`);
-  const url = new URL(value);
-  assert.equal(url.hostname, '127.0.0.1'); assert.equal(url.port, '55439');
-  assert.equal(url.pathname, '/restaurant_test'); assert.equal(decodeURIComponent(url.username), role);
-  return value;
-}
+import { createTestDatabasePool, createTestDatabasePools, readTestDatabaseScope } from './database-scope.js';
 async function application(value = config): Promise<FastifyInstance> {
   const instance = createApp({ pool, config: value });
   instance.register(async routes => {
@@ -42,8 +37,8 @@ async function application(value = config): Promise<FastifyInstance> {
   return instance;
 }
 before(async () => {
-  const databaseUrl = testUrl('TEST_DATABASE_URL', 'restaurant_test_app');
-  const migrationDatabaseUrl = testUrl('TEST_MIGRATION_DATABASE_URL', 'restaurant_test_owner');
+  const scope = readTestDatabaseScope();
+  const { databaseUrl, migrationDatabaseUrl } = scope;
   root = await mkdtemp('/tmp/restaurant-menu-test-');
   // 仅合成测试配置，不读取 .env.*，不使用真实供应商密钥。
   config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl, MIGRATION_DATABASE_URL: migrationDatabaseUrl,
@@ -51,7 +46,7 @@ before(async () => {
     TOKEN_PEPPER: 'menu-fixture-pepper-'.repeat(3), CURSOR_SECRET: 'menu-fixture-cursor-'.repeat(3), OUTBOX_ENCRYPTION_KEY: 'a2'.repeat(32) });
   config.website = { apiKey: 'fixture-only-not-a-provider-key', baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash',
     publicOrigin: 'http://127.0.0.1:4010', port: 4010, host: '127.0.0.1' };
-  owner = createPool(migrationDatabaseUrl); pool = createPool(databaseUrl);
+  ({ owner, pool } = await createTestDatabasePools(scope));
   assert.deepEqual((await owner.query('SELECT current_database() AS db,current_user AS role')).rows[0], { db: 'restaurant_test', role: 'restaurant_test_owner' });
   await migrate(owner, 'restaurant_test_app');
   // 主集成尚未加入 005 时也使用原迁移锁与校验表，不修改迁移器。
@@ -183,9 +178,49 @@ async function completed(rid: string, actor: Actor, assets: string[], expected =
   assert.equal(accepted.statusCode, 202, accepted.body);
   assert.equal(await runMenuJobs(pool, config, fixtureRecognizer), 1);
   assert.equal((await state(rid, actor)).jobs[0]!.status, 'succeeded');
+  await menuAiCall(accepted.json().job_id, 'completed', { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
   return accepted.json().job_id as string;
 }
 async function storedJob(jid: string): Promise<MenuJob> { return (await owner.query<MenuJob>('SELECT * FROM menu_jobs WHERE id=$1', [jid])).rows[0]!; }
+async function menuAiCall(jobId: string, status: 'started' | 'completed' | 'failed', usage: AiTokenUsage | null, error: string | null = null) {
+  const result = await owner.query('SELECT * FROM ai_model_calls WHERE menu_job_id=$1 ORDER BY call_index', [jobId]);
+  assert.equal(result.rowCount, 1, '真实菜单调用只记一行，不按图片数量展开');
+  const call = result.rows[0], job = await storedJob(jobId);
+  const account = (await owner.query('SELECT * FROM billing_accounts WHERE owner_user_id=$1', [job.requesting_user_id])).rows;
+  assert.equal(account.length, 1); assert.equal(call.billing_account_id, account[0].id);
+  assert.equal(call.requesting_user_id, job.requesting_user_id); assert.equal(call.restaurant_id, job.restaurant_id);
+  assert.equal(call.website_job_id, null); assert.equal(call.menu_job_id, jobId); assert.equal(call.feature, 'menu_recognition');
+  assert.equal(call.model, 'deepseek-flash'); assert.equal(call.provider, 'deepseek'); assert.equal(call.policy_version, 'observation-v1');
+  assert.equal(call.origin, 'live'); assert.equal(call.chargeable, false); assert.equal(call.legacy_source_key, null);
+  assert.equal(call.call_index, 1); assert.equal(call.request_key, `${jobId}:1`); assert.match(call.runner_token, /^[0-9a-f-]{36}$/);
+  if (job.lease_token) assert.equal(call.runner_token, job.lease_token);
+  assert.equal(call.call_status, status); assert.equal(call.usage_status, status === 'started' ? 'pending' : usage === null ? 'unknown' : 'known');
+  assert.deepEqual([call.prompt_tokens, call.completion_tokens, call.total_tokens], usage === null ? [null, null, null] :
+    [String(usage.prompt_tokens), String(usage.completion_tokens), String(usage.total_tokens)]);
+  assert.equal(call.error_code, error);
+  if (status === 'started') { assert.equal(call.finished_at, null); assert.equal(call.elapsed_ms, null); }
+  else { assert.ok(call.finished_at >= call.created_at); assert.equal(typeof call.elapsed_ms, 'string'); assert.ok(Number.isSafeInteger(Number(call.elapsed_ms)) && Number(call.elapsed_ms) >= 0); }
+  if (usage === null) assert.equal(call.received_at, null);
+  else assert.ok(call.received_at >= call.finished_at);
+  return call;
+}
+async function menuAiTotals(who: Actor, expected: AiCallTotals): Promise<void> {
+  const response = await app.inject({ method: 'GET', url: '/api/v1/ai/usage', headers: { cookie: who.cookie, origin: config.appOrigin } });
+  assert.equal(response.statusCode, 200, response.body);
+  const report = response.json(); assert.equal(report.mode, 'observation'); assert.deepEqual(report.account_totals, expected);
+  assert.deepEqual(report.filtered_totals, expected);
+  const uid = (await owner.query('SELECT id FROM users WHERE email_normalized=$1', [who.email])).rows[0].id;
+  const actual = (await owner.query(`SELECT count(*)::int AS calls,
+    (count(*) FILTER (WHERE usage_status='known'))::int AS known_usage_calls,
+    (count(*) FILTER (WHERE usage_status='unknown'))::int AS unknown_usage_calls,
+    (count(*) FILTER (WHERE usage_status='pending'))::int AS pending_calls,
+    coalesce(sum(prompt_tokens),0)::text AS prompt_tokens,coalesce(sum(completion_tokens),0)::text AS completion_tokens,
+    coalesce(sum(total_tokens),0)::text AS total_tokens FROM ai_model_calls WHERE requesting_user_id=$1`, [uid])).rows[0];
+  assert.deepEqual(Object.fromEntries(Object.entries(actual).map(([key, value]) => [key, Number(value)])), expected);
+  assert.deepEqual(report.quota, { configured: false, enforced: false, available_tokens: null, granted_tokens: null, reserved_tokens: null, consumed_tokens: null });
+  for (const table of ['ai_quota_periods', 'ai_quota_ledger']) assert.equal((await owner.query(
+    `SELECT count(*)::int AS n FROM ${table} q JOIN billing_accounts a ON a.id=q.billing_account_id WHERE a.owner_user_id=$1`, [uid])).rows[0].n, 0);
+}
 
 test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保护', async t => {
   t.mock.method(globalThis, 'fetch', async () => { assert.fail('菜单测试禁止真实网络及计费模型调用'); });
@@ -260,7 +295,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     assert.deepEqual(saved.input.asset_ids, [second.id, first.id]);
     assert.deepEqual(Object.keys(saved.sources[0]!).sort(), ['id', 'mime_type', 'checksum', 'size_bytes', 'storage_key', 'storage_backend'].sort());
     assert.equal((await request('DELETE', `/restaurants/${rid}/assets/${first.id}`, alice, undefined, { 'if-match': `"asset-${first.id}-v1"` })).json().code, 'ASSET_IN_USE');
-    await app.close(); await pool.end(); pool = createPool(config.databaseUrl); app = await application();
+    await app.close(); await pool.end(); pool = await createTestDatabasePool('app', readTestDatabaseScope()); app = await application();
     const inspect: MenuRecognizer = async (value, images) => {
       assert.deepEqual(images.map(image => image.mime_type), ['image/jpeg', 'image/png']);
       assert.deepEqual(images[0]!.bytes, second.bytes); assert.deepEqual(images[1]!.bytes, first.bytes);
@@ -268,6 +303,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
       return fixtureRecognizer(value, images);
     };
     assert.equal(await runMenuJobs(pool, config, inspect), 1);
+    const metric = await menuAiCall(successfulJob, 'completed', { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
     const done = await state(rid, alice);
     assert.equal(done.draft!.revision, 1); assert.equal(done.draft!.status, 'draft'); assert.deepEqual(done.draft!.data, recognizedData);
     assert.deepEqual(done.draft!.source_asset_ids, [second.id, first.id]); assert.equal(done.jobs[0]!.result_revision, 1);
@@ -287,6 +323,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     assert.deepEqual((await confirm(rid, alice, 3)).json(), confirmed);
     assert.equal((await recognize(rid, alice, [second.id, first.id], 0, key)).json().job_id, successfulJob);
     assert.equal((await owner.query("SELECT id FROM asset_references WHERE purpose='menu_job' AND resource_id=$1", [successfulJob])).rowCount, 2);
+    assert.deepEqual(await menuAiCall(successfulJob, 'completed', { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 }), metric);
   });
   await t.test('422空确认，PATCH强字段与CSRF，1MiB允许完整80项多字节描述，不伪造价格', async () => {
     const emptyRid = await restaurant(bob, '空菜单店');
@@ -312,6 +349,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     assert.equal(await runMenuJobs(pool, config, failing), 1);
     const failed = await state(rid, alice);
     assert.deepEqual(failed.draft, previous); assert.equal(failed.jobs[0]!.error_code, 'AI_BALANCE_INSUFFICIENT');
+    await menuAiCall(accepted.json().job_id, 'failed', null, 'AI_BALANCE_INSUFFICIENT');
     assert.equal((await owner.query('SELECT id FROM asset_references WHERE resource_id=$1', [accepted.json().job_id])).rowCount, 0);
     assert.equal((await owner.query('SELECT id FROM asset_references WHERE resource_id=$1', [successfulJob])).rowCount, 2);
     assert.deepEqual(await readFile(join(root, newSource.asset.storage_key)), newSource.bytes);
@@ -319,6 +357,8 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     const wrong: MenuRecognizer = async () => ({ data: { ...recognizedData, unexpected: '不可进入菜单' } as MenuData, model: 'deepseek-flash', usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
     assert.equal(await runMenuJobs(pool, config, wrong), 1);
     assert.equal((await state(rid, alice)).jobs[0]!.error_code, 'AI_OUTPUT_INVALID'); assert.deepEqual((await state(rid, alice)).draft, previous);
+    // fixture 已返回数据：业务校验失败不覆写已完成调用的真实终态。
+    await menuAiCall(invalid.json().job_id, 'completed', { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 });
     assert.equal(await runMenuJobs(pool, config, failing), 0);
   });
   await t.test('新识别可替换当前来源，成功旧来源与网页历史不清理', async () => {
@@ -343,6 +383,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
       try {
         assert.equal(await runMenuJobs(pool, config, async (...args) => { calls++; return fixtureRecognizer(...args); }), 1);
         assert.equal(calls, 0); assert.equal((await state(rid, alice)).jobs[0]!.error_code, 'MENU_SOURCE_UNAVAILABLE');
+        assert.equal((await owner.query('SELECT id FROM ai_model_calls WHERE menu_job_id=$1', [accepted.json().job_id])).rowCount, 0);
         assert.deepEqual((await state(rid, alice)).draft, previous);
       } finally {
         if (mode === 'missing') await rename(held, filename);
@@ -359,12 +400,14 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     const noPaid: MenuRecognizer = async (...args) => { calls++; return fixtureRecognizer(...args); };
     assert.equal(await runMenuJobs(pool, config, noPaid), 1); assert.equal(calls, 0);
     assert.equal((await state(rid, alice)).jobs[0]!.error_code, 'JOB_INTERRUPTED');
+    assert.equal((await owner.query('SELECT id FROM ai_model_calls WHERE menu_job_id=$1', [accepted.json().job_id])).rowCount, 0);
     assert.equal(await runMenuJobs(pool, config, noPaid), 0);
     const revoke = await recognize(rid, alice, [source.id], expected); assert.equal(revoke.statusCode, 202);
     await owner.query("UPDATE restaurant_members SET status='revoked' WHERE restaurant_id=$1", [rid]);
     try {
       assert.equal(await runMenuJobs(pool, config, noPaid), 1); assert.equal(calls, 0);
       assert.equal((await storedJob(revoke.json().job_id)).error_code, 'MENU_CONTEXT_REVOKED');
+      assert.equal((await owner.query('SELECT id FROM ai_model_calls WHERE menu_job_id=$1', [revoke.json().job_id])).rowCount, 0);
     } finally { await owner.query("UPDATE restaurant_members SET status='active' WHERE restaurant_id=$1", [rid]); }
   });
   await t.test('模型调用不占行锁，完成前revision或owner改变丢弃结果', async () => {
@@ -381,6 +424,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     };
     assert.equal(await runMenuJobs(pool, config, change), 1);
     assert.equal((await state(rid, alice)).jobs[0]!.error_code, 'MENU_CONTEXT_CHANGED');
+    await menuAiCall(accepted.json().job_id, 'completed', { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
     assert.deepEqual((await state(rid, alice)).draft!.data, previous.data);
     const revoke = await recognize(rid, alice, [source.id], previous.revision + 1); assert.equal(revoke.statusCode, 202);
     const disable: MenuRecognizer = async (...args) => {
@@ -390,6 +434,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     try {
       assert.equal(await runMenuJobs(pool, config, disable), 1);
       assert.equal((await storedJob(revoke.json().job_id)).error_code, 'MENU_CONTEXT_REVOKED');
+      await menuAiCall(revoke.json().job_id, 'completed', { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
     } finally { await owner.query("UPDATE users SET status='active' WHERE email_normalized=$1", [alice.email]); }
   });
   await t.test('引用保存失败整体回滚，失败审计失败不半释放来源', async () => {
@@ -441,6 +486,8 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     assert.equal(await running, 1);
     assert.equal(await runMenuJobs(pool, config, fixtureRecognizer), 1);
     assert.equal(await runMenuJobs(pool, config, fixtureRecognizer), 1);
+    await menuAiTotals(concurrent, { calls: 3, known_usage_calls: 3, unknown_usage_calls: 0, pending_calls: 0,
+      prompt_tokens: 300, completion_tokens: 60, total_tokens: 360 });
   });
   await t.test('确认菜单到网页端到端：文字价格快照、内部备注隔离、历史版本冻结且不读取源图片', async () => {
     const merchant = await actor('menu.website-e2e@restaurant.example'), webRid = await restaurant(merchant, '菜单网页闭环店');
@@ -556,7 +603,7 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
       for (const source of hidden.reverse()) await rename(source.held, source.filename);
     }
   });
-  await t.test('网页busy拒识别但允许编辑确认，菜单变更不修改既有网页行', async () => {
+  await t.test('网页busy拒识别和编辑确认，终态后菜单变更不改既有网页且可审核发布历史快照', async () => {
     const webRid = await restaurant(bob, '冻结网站店'), source = await upload(webRid, bob);
     const photo = await upload(webRid, bob, 'image/png', 'restaurant_photo');
     assert.equal((await edit(webRid, bob, recognizedData, 0)).statusCode, 200);
@@ -564,14 +611,34 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     const generation = await request('POST', `/restaurants/${webRid}/website/generations`, bob, { brief: '仅测试页面快照', asset_ids: [photo.id], public_assets_confirmed: true, expected_restaurant_revision: 1 }, { 'idempotency-key': id('generate') });
     assert.equal(generation.statusCode, 202, generation.body);
     assert.equal((await recognize(webRid, bob, [source.id], 2)).json().code, 'WEBSITE_JOB_BUSY');
+    const frozenMenu = await readMenuDraft(pool, webRid);
+    const frozenJob = (await owner.query('SELECT * FROM website_jobs WHERE id=$1', [generation.json().job_id])).rows[0];
+    for (const response of [await edit(webRid, bob, recognizedData, 2), await confirm(webRid, bob, 2)]) {
+      assert.equal(response.statusCode, 409, response.body); assert.equal(response.json().code, 'WEBSITE_JOB_BUSY');
+    }
+    assert.deepEqual(await readMenuDraft(pool, webRid), frozenMenu);
+    assert.deepEqual((await owner.query('SELECT * FROM website_jobs WHERE id=$1', [generation.json().job_id])).rows[0], frozenJob);
+    assert.equal(await runWebsiteJobs(pool, config, fixtureWebsite), 1);
+    assert.equal((await owner.query('SELECT status FROM website_jobs WHERE id=$1', [generation.json().job_id])).rows[0].status, 'succeeded');
     assert.equal((await edit(webRid, bob, recognizedData, 2)).statusCode, 200);
     assert.equal((await confirm(webRid, bob, 3)).statusCode, 200);
-    assert.equal(await runWebsiteJobs(pool, config, fixtureWebsite), 1);
     const before = (await owner.query('SELECT * FROM website_versions WHERE restaurant_id=$1 ORDER BY id', [webRid])).rows;
     const jobs = (await owner.query('SELECT * FROM website_jobs WHERE restaurant_id=$1 ORDER BY id', [webRid])).rows;
     assert.ok(before.length > 0);
-    assert.equal((await edit(webRid, bob, recognizedData, 4)).statusCode, 200);
+    const nextMenu = structuredClone(recognizedData); nextMenu.categories[0]!.items[1]!.price_text = '18';
+    assert.equal((await edit(webRid, bob, nextMenu, 4)).statusCode, 200);
     assert.equal((await confirm(webRid, bob, 5)).statusCode, 200);
+    const oldVersion = before[0] as WebsiteVersion, reviewed = { version_id: oldVersion.id, expected_revision: 0,
+      slug: 'menu-frozen-history', expected_checksum: oldVersion.checksum,
+      expected_public_content_hash: websiteContentHash(oldVersion.snapshot), review_confirmed: true };
+    const current = await request('POST', `/restaurants/${webRid}/website/publication`, bob,
+      { ...reviewed, content_mode: 'current' }, { 'idempotency-key': id('publish') });
+    assert.equal(current.statusCode, 409, current.body); assert.equal(current.json().code, 'WEBSITE_PUBLIC_CONTENT_CONFLICT');
+    const currentMenu = await readMenuDraft(pool, webRid);
+    const historical = await request('POST', `/restaurants/${webRid}/website/publication`, bob,
+      { ...reviewed, content_mode: 'historical' }, { 'idempotency-key': id('publish') });
+    assert.equal(historical.statusCode, 200, historical.body); assert.equal(historical.json().published_version_id, oldVersion.id);
+    assert.deepEqual(await readMenuDraft(pool, webRid), currentMenu, '历史发布不回滚当前已确认菜单');
     assert.deepEqual((await owner.query('SELECT * FROM website_versions WHERE restaurant_id=$1 ORDER BY id', [webRid])).rows, before);
     assert.deepEqual((await owner.query('SELECT * FROM website_jobs WHERE restaurant_id=$1 ORDER BY id', [webRid])).rows, jobs);
     await assert.rejects(pool.query("DELETE FROM asset_references WHERE purpose='website_job' AND resource_id=$1", [generation.json().job_id]), { code: '42501' });
@@ -603,6 +670,8 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
       { 'idempotency-key': id('generate') });
     assert.equal(websiteLimited.statusCode, 429); assert.equal(websiteLimited.json().code, 'WEBSITE_DAILY_LIMIT');
     assert.equal((await owner.query('SELECT id FROM website_jobs WHERE restaurant_id=$1', [nextRid])).rowCount, 0);
+    await menuAiTotals(quotaActor, { calls: 2, known_usage_calls: 2, unknown_usage_calls: 0, pending_calls: 0,
+      prompt_tokens: 200, completion_tokens: 40, total_tokens: 240 });
   });
   await t.test('仅菜单任务已满30次也阻止本店与跨店网页生成，原菜单任务仍能重放', async () => {
     const merchant = await actor('menu.website-quota@restaurant.example');
@@ -628,6 +697,8 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     const replay = await recognize(menuRid, merchant, [source.id], 0, key);
     assert.equal(replay.statusCode, 202, replay.body); assert.equal(replay.json().job_id, original.id); assert.equal(replay.json().status, 'succeeded');
     assert.equal((await readMenuDraft(pool, menuRid))!.revision, confirmed.json().revision);
+    await menuAiTotals(merchant, { calls: 1, known_usage_calls: 1, unknown_usage_calls: 0, pending_calls: 0,
+      prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 });
   });
   await t.test('每店200任务上限仍可重放，权限保护原输入和成功来源引用', async () => {
     const capActor = await actor('menu.cap@restaurant.example'), capRid = await restaurant(capActor, '菜单任务上限店');
@@ -648,6 +719,73 @@ test('真实 PostgreSQL 菜单视觉识别、人工编辑、确认与来源保�
     await assert.rejects(pool.query("INSERT INTO asset_references(id,restaurant_id,asset_id,purpose,resource_id) VALUES($1,$2,$3,'menu_job',$4)", [id('ref'), capRid, source.id, id('mnj')]), { code: '42501' });
     assert.equal((await owner.query("SELECT id FROM audit_logs WHERE entity_type='menu' AND action='menu_recognition_requested' AND restaurant_id=$1", [capRid])).rowCount, 1);
     assert.ok((await owner.query("SELECT id FROM audit_logs WHERE entity_type='menu' AND id LIKE 'aud_%' LIMIT 1")).rowCount);
+  });
+});
+
+test('真实 PostgreSQL 新独立 actor：菜单缺 usage 成功、非法 JSON 与超时保留已知用量、发送前撤权零调用及跨店对话共享账户', async t => {
+  t.mock.method(globalThis, 'fetch', async () => assert.fail('观察计量测试禁止真实网络和模型调用'));
+  const who = await actor('menu.observation.lifecycle@restaurant.example');
+  const firstRid = await restaurant(who, '未知用量菜单店'), secondRid = await restaurant(who, '已知失败菜单店');
+  const first = await upload(firstRid, who), second = await upload(secondRid, who);
+  let accountId: string;
+  await t.test('usage null 仍成功，completed unknown 的三个计数保留 NULL', async () => {
+    const accepted = await recognize(firstRid, who, [first.id]); assert.equal(accepted.statusCode, 202, accepted.body);
+    const missing: MenuRecognizer = async () => ({ data: structuredClone(recognizedData), model: 'deepseek-flash', usage: null });
+    assert.equal(await runMenuJobs(pool, config, missing), 1);
+    const done = await state(firstRid, who); assert.equal(done.jobs[0]!.status, 'succeeded');
+    assert.equal(done.draft!.revision, 1); assert.deepEqual(done.draft!.data, recognizedData);
+    accountId = (await menuAiCall(accepted.json().job_id, 'completed', null)).billing_account_id;
+  });
+  await t.test('provider 非法菜单 JSON 已保留 usage，任务 failed 且调用 failed known', async () => {
+    const accepted = await recognize(firstRid, who, [first.id], 1); assert.equal(accepted.statusCode, 202, accepted.body);
+    const invalidJson: MenuRecognizer = async (_value, _images, beforeSend) => {
+      assert.ok(beforeSend); await beforeSend();
+      throw Object.assign(new Error('合成非法菜单 JSON'), { code: 'AI_OUTPUT_INVALID', usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } });
+    };
+    assert.equal(await runMenuJobs(pool, config, invalidJson), 1);
+    const job = await storedJob(accepted.json().job_id); assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'AI_OUTPUT_INVALID');
+    assert.deepEqual((await state(firstRid, who)).draft!.data, recognizedData); assert.equal((await state(firstRid, who)).draft!.revision, 1);
+    assert.equal((await menuAiCall(job.id, 'failed', { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }, 'AI_OUTPUT_INVALID')).billing_account_id, accountId);
+  });
+  await t.test('timeout 附 usage 跨第二店保留原账户且不重试、不复活', async () => {
+    const accepted = await recognize(secondRid, who, [second.id]); assert.equal(accepted.statusCode, 202, accepted.body);
+    const timeout: MenuRecognizer = async () => { throw Object.assign(new Error('合成超时'), {
+      status: 504, usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }); };
+    assert.equal(await runMenuJobs(pool, config, timeout), 1);
+    const job = await storedJob(accepted.json().job_id); assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'AI_TIMEOUT');
+    const metric = await menuAiCall(job.id, 'failed', { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }, 'AI_TIMEOUT');
+    assert.equal(metric.billing_account_id, accountId); assert.equal(await runMenuJobs(pool, config, timeout), 0);
+    assert.deepEqual(await storedJob(job.id), job);
+    assert.deepEqual(await menuAiCall(job.id, 'failed', { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 }, 'AI_TIMEOUT'), metric);
+  });
+  await t.test('真实 beforeSend 复核撤权失败，不产生 010 行', async () => {
+    const accepted = await recognize(secondRid, who, [second.id]); assert.equal(accepted.statusCode, 202, accepted.body);
+    let paid = 0;
+    const revoked: MenuRecognizer = async (_value, _images, beforeSend) => {
+      assert.ok(beforeSend); await owner.query("UPDATE restaurant_members SET status='revoked' WHERE restaurant_id=$1", [secondRid]);
+      await beforeSend(); paid++; return fixtureRecognizer(_value, _images);
+    };
+    try {
+      assert.equal(await runMenuJobs(pool, config, revoked), 1); assert.equal(paid, 0);
+      const job = await storedJob(accepted.json().job_id); assert.equal(job.status, 'failed'); assert.equal(job.error_code, 'MENU_CONTEXT_REVOKED');
+      assert.equal((await owner.query('SELECT id FROM ai_model_calls WHERE menu_job_id=$1', [job.id])).rowCount, 0);
+    } finally { await owner.query("UPDATE restaurant_members SET status='active' WHERE restaurant_id=$1", [secondRid]); }
+  });
+  await t.test('同用户菜单与 chat 共用账户；未发送任务不混入累计，也不授予 token quota', async () => {
+    const accepted = await request('POST', `/restaurants/${secondRid}/website/messages`, who,
+      { message: '讨论菜单呈现', expected_revision: 0 }, { 'idempotency-key': id('chat') });
+    assert.equal(accepted.statusCode, 202, accepted.body); assert.equal(await runWebsiteJobs(pool, config, fixtureWebsite), 1);
+    const job = (await owner.query('SELECT * FROM website_jobs WHERE id=$1', [accepted.json().job_id])).rows[0];
+    assert.equal(job.status, 'succeeded');
+    const calls = (await owner.query('SELECT * FROM ai_model_calls WHERE website_job_id=$1', [job.id])).rows;
+    assert.equal(calls.length, 1); const call = calls[0];
+    assert.equal(call.billing_account_id, accountId); assert.equal(call.requesting_user_id, job.requesting_user_id);
+    assert.equal(call.restaurant_id, secondRid); assert.equal(call.menu_job_id, null); assert.equal(call.feature, 'website_chat');
+    assert.equal(call.call_status, 'completed'); assert.equal(call.usage_status, 'unknown'); assert.equal(call.chargeable, false);
+    assert.deepEqual([call.prompt_tokens, call.completion_tokens, call.total_tokens], [null, null, null]);
+    assert.equal((await owner.query('SELECT count(*)::int AS n FROM menu_jobs WHERE requesting_user_id=$1', [job.requesting_user_id])).rows[0].n, 4);
+    await menuAiTotals(who, { calls: 4, known_usage_calls: 2, unknown_usage_calls: 2, pending_calls: 0,
+      prompt_tokens: 15, completion_tokens: 5, total_tokens: 20 });
   });
 });
 

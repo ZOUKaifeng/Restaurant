@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { createDecipheriv, createHash, randomUUID } from 'node:crypto';
+import { createDecipheriv, randomUUID } from 'node:crypto';
 import type { FastifyInstance, HTTPMethods } from 'fastify';
 import type { Pool } from 'pg';
 import { createApp } from '../src/app.js';
 import { loadConfig, type Config } from '../src/config.js';
-import { assertAppDatabase, createPool, id } from '../src/db.js';
+import { assertAppDatabase, id } from '../src/db.js';
 import { migrate } from '../scripts/migrate.js';
+import { insertGeneratedWebsiteFixture } from './website-fixtures.js';
 import { ApiError } from '../src/errors.js';
 import { FLOW_COOKIE, SESSION_COOKIE } from '../src/security.js';
 import { resolveLocalStart } from '../src/reservation-access.js';
@@ -14,27 +15,20 @@ import { resolveLocalStart } from '../src/reservation-access.js';
 let app: FastifyInstance, pool: Pool, owner: Pool, config: Config;
 let sequence = 0;
 const password = '订位测试-Valid-Password-2026!';
-const tables = 'reservations,reservation_events,reservation_access_tokens,website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+const tables = 'ai_calendar_credit_grants,website_content_actions,website_version_sources,billing_subscriptions,billing_offer_grants,ai_quota_ledger,ai_quota_periods,ai_model_calls,billing_accounts,analytics_events,analytics_daily,reservations,reservation_events,reservation_access_tokens,website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_upload_intents,asset_references,assets,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
 interface Actor { email: string; cookie: string; csrf: string }
 interface Shop { rid: string; slug: string; revision: number }
 
-function testUrl(key: string, role: string): string {
-  const value = process.env[key];
-  assert.ok(value, `必须提供真实 ${key}，禁止跳过或连接开发数据库`);
-  const url = new URL(value);
-  assert.equal(url.hostname, '127.0.0.1'); assert.equal(url.port, '55439');
-  assert.equal(url.pathname, '/restaurant_test'); assert.equal(decodeURIComponent(url.username), role);
-  return value;
-}
+import { createTestDatabasePools, readTestDatabaseScope } from './database-scope.js';
 before(async () => {
-  const databaseUrl = testUrl('TEST_DATABASE_URL', 'restaurant_test_app');
-  const migrationDatabaseUrl = testUrl('TEST_MIGRATION_DATABASE_URL', 'restaurant_test_owner');
+  const scope = readTestDatabaseScope();
+  const { databaseUrl, migrationDatabaseUrl } = scope;
   config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: databaseUrl, MIGRATION_DATABASE_URL: migrationDatabaseUrl,
     APP_ORIGIN: 'https://localhost:5173', EMAIL_MODE: 'disabled', STORAGE_MODE: 'local',
     STORAGE_LOCAL_ROOT: '/tmp/restaurant-reservation-test-assets', SITE_PUBLIC_ORIGIN: 'http://127.0.0.1:4010',
     SITE_PORT: '4010', TOKEN_PEPPER: 'reservation-fixture-pepper-'.repeat(3),
     CURSOR_SECRET: 'reservation-fixture-cursor-'.repeat(3), OUTBOX_ENCRYPTION_KEY: 'b2'.repeat(32) });
-  owner = createPool(migrationDatabaseUrl); pool = createPool(databaseUrl);
+  ({ owner, pool } = await createTestDatabasePools(scope));
   await migrate(owner, 'restaurant_test_app');
   await assertAppDatabase(pool);
   await owner.query(`TRUNCATE ${tables}`);
@@ -89,11 +83,7 @@ function localDate(days = 3): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(Date.now() + days * 86400000));
 }
 async function publishFixture(rid: string, slug: string): Promise<void> {
-  const html = '<!DOCTYPE html><html lang="en"><head><title>fixture</title></head><body><h1>fixture</h1></body></html>';
-  const vid = id('wsv');
-  await owner.query(`INSERT INTO website_versions(id,restaurant_id,version_number,summary,html,checksum,snapshot,asset_ids,model)
-    VALUES($1,$2,1,'fixture',$3,$4,$5,'{}','fixture')`, [vid, rid, html,
-  createHash('sha256').update(html).digest('hex'), JSON.stringify({ restaurant: {}, opening_hours: [], assets: [] })]);
+  const vid = (await insertGeneratedWebsiteFixture(owner, rid, 1)).id;
   await owner.query(`INSERT INTO website_publications(restaurant_id,revision,published_version_id,slug,deployment_mode)
     VALUES($1,1,$2,$3,'local')`, [rid, vid, slug]);
 }

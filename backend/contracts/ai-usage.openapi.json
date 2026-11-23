@@ -1,0 +1,251 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "AI 真实调用观测账本",
+    "version": "v1",
+    "description": "只读 observation-v1；GET 不授予、预留或消费额度，不开启支付。仅显示显式登记且当前有效的 UTC 自然月 development_test 授额；调用消费由已安装的 ledger trigger 同步，仅计授额后开始的新 live known 调用，不追扣旧调用，月底失效不续发，全球仍无 hard limit。真实已验证用户的服务端 Session cookie 鉴权，不是 JWT。每次读取事务内重锁用户和会话，REPEATABLE READ 保持统计一致。没有账户时返回 null，GET 不创建账户。默认日期为 all time：全部已有账本，而非最近若干天。account_totals 和 legacy 为全账户、不受 filters 影响；filtered_totals 与 by_feature 应用全部过滤条件。只累计 known 用量，不把 pending/unknown 当已知零。"
+  },
+  "security": [{ "merchantSession": [] }],
+  "paths": {
+    "/api/v1/ai/usage": {
+      "get": {
+        "operationId": "getAiUsage",
+        "summary": "读取本人全账户和过滤后的观测统计",
+        "description": "仅 a.owner_user_id 与 calls.requesting_user_id 都为会话用户的账本。按餐厅过滤必须是当前 active owner；即使当前接收了转移餐厅，也不读取前店主账户。拒绝未知参数、重复参数、数组和对象输入。legacy 是历史 generate 任务的独立 aggregate 摘要，不可拆成逐调用，也没有旧菜单/对话的虚构统计。",
+        "x-additional-query-parameters": false,
+        "parameters": [
+          { "$ref": "#/components/parameters/Restaurant" },
+          { "$ref": "#/components/parameters/Feature" },
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/From" },
+          { "$ref": "#/components/parameters/To" }
+        ],
+        "responses": {
+          "200": { "description": "一致性快照，未登记或失效 quota 保持原六字段全 null 且无 period/calendar_month_totals；有效登记返回 raw token 配额和周期，并可提供仅授额后本月的 calendar_month_totals。legacy 独立全账户 all time aggregate，仅计 010 applied_at 之前的旧 generate 任务，排除任何 ai_model_calls 或 007 website_model_calls；优先 j.usage，只有其 SQL NULL 且 succeeded 才回退同餐厅 result version usage。total_tokens 必须是安全非负整数；三项可用时必须一致。仅 total 可用仍标记为 aggregate，不推算 prompt/completion。aggregate_jobs 是存在 usage 的历史任务数（可能无效）；unknown_usage_jobs 是 usage 无效或有 result version 但无 usage 的任务数，两者可重叠。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiUsageReport" } } } },
+          "400": { "$ref": "#/components/responses/InvalidQuery" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/RestaurantUnavailable" },
+          "422": { "$ref": "#/components/responses/Overflow" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/ai/usage/calls": {
+      "get": {
+        "operationId": "getAiUsageCalls",
+        "summary": "读取本人真实调用，按微秒时间和 ID 倒序分页",
+        "description": "created_at DESC,id DESC，以精确 PG 六位微秒时间和 id 的元组小于 cursor 分页，JS Date 不截断边界。历史餐厅撤权或已删除后保留账本 restaurant_id/job_id，restaurant_name 为 null；仅当前 active owner 且可用餐厅可见名称。不返回 runner_token、request_key、用户身份、邮箱、input、prompt、dataURL 或费用。",
+        "x-additional-query-parameters": false,
+        "parameters": [
+          { "$ref": "#/components/parameters/Restaurant" },
+          { "$ref": "#/components/parameters/Feature" },
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/From" },
+          { "$ref": "#/components/parameters/To" },
+          { "name": "limit", "in": "query", "description": "规范十进制安全整数，默认 20，范围 1..50；拒绝指数、小数、前导零、符号、重复键和数组。只用于 calls。", "schema": { "type": "integer", "minimum": 1, "maximum": 50, "default": 20 } },
+          { "name": "cursor", "in": "query", "description": "只用于 calls，不透明有界 HMAC-SHA256 签名游标，绑定 v1、会话 user_id、完整归一化 filters、limit、精确 last_created_at 和 aic last_id。篡改、跨用户、换 filters/limit 一律 400，不静默重置。", "schema": { "type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}$" } }
+        ],
+        "responses": {
+          "200": { "description": "最多 limit 条，next_cursor 为 null 表示当前快照无更多记录。分页各请求独立快照，不承诺整个分页过程冻结；unknown/pending 的所有 token 数量为 null，known 的真实零保留 0。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AiUsageCalls" } } } },
+          "400": { "$ref": "#/components/responses/InvalidQuery" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "409": { "$ref": "#/components/responses/RestaurantUnavailable" },
+          "422": { "$ref": "#/components/responses/Overflow" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    },
+    "/api/v1/billing/account": {
+      "get": {
+        "operationId": "getBillingAccount",
+        "summary": "只读本人已有计量账户",
+        "description": "不接受任何 query 参数。无调用且尚未建账户的新用户返回 account:null，绝不调用 ensureBillingAccount。已有历史迁移账户照实返回；suspended/closed 状态不伪装 active。不返回支付链接、余额或用户信息。",
+        "x-additional-query-parameters": false,
+        "parameters": [],
+        "responses": {
+          "200": { "description": "观察模式账户或 null，payment_enabled 固定 false。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/BillingAccountResponse" } } } },
+          "400": { "$ref": "#/components/responses/InvalidQuery" },
+          "401": { "$ref": "#/components/responses/Unauthenticated" },
+          "403": { "$ref": "#/components/responses/Forbidden" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "503": { "$ref": "#/components/responses/Unavailable" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "merchantSession": { "type": "apiKey", "in": "cookie", "name": "__Host-restaurant_session", "description": "Secure、HttpOnly、SameSite=Lax 的服务端 Session；必须真实 active 且邮箱已验证，并在每次事务内重新校验未撤销与有效期。不是 Bearer/JWT。GET 不要求 CSRF，不能产生业务写入。" }
+    },
+    "parameters": {
+      "Restaurant": { "name": "restaurant_id", "in": "query", "description": "必须为当前用户当前 active owner 的可用餐厅；其他、不存在或撤权均 404，不枚举其他账户。", "schema": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,64}$" } },
+      "Feature": { "name": "feature", "in": "query", "schema": { "$ref": "#/components/schemas/AiFeature" } },
+      "Origin": { "name": "origin", "in": "query", "schema": { "$ref": "#/components/schemas/AiOrigin" } },
+      "From": { "name": "from", "in": "query", "description": "from/to 必须同时给出，严格 YYYY-MM-DD（0001..9999），UTC 含首尾最多 366 个日历日；没有日期即 all time。数据库范围 >=from UTC 午夜且 <to 次日 UTC 午夜。", "schema": { "type": "string", "format": "date", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-[0-9]{2}$" } },
+      "To": { "name": "to", "in": "query", "description": "与 from 成对且 to>=from；不允许空值、时间戳、数组或重复。", "schema": { "type": "string", "format": "date", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-[0-9]{2}$" } }
+    },
+    "responses": {
+      "InvalidQuery": { "description": "400 REQUEST_INVALID：未知/重复参数、非字符串输入、无效餐厅/枚举/日期范围/limit，或游标非法、篡改、跨用户、变更 filter/limit。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthenticated": { "description": "401 UNAUTHENTICATED：无真实 Session、会话过期/撤销、用户停用或邮箱未验证；包括锁内重新鉴权失败。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Forbidden": { "description": "403 FORBIDDEN：宿主安全中间件拒绝请求。餐厅跨账户/撤权不使用 403，而统一 404；本模块未验证用户沿 requireSession 返回 401。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "NotFound": { "description": "404 NOT_FOUND：餐厅不存在或当前用户不是当前 active owner，响应不能区分。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "RestaurantUnavailable": { "description": "409 RESTAURANT_UNAVAILABLE：本人仍为 active owner，但筛选餐厅当前不可用。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Overflow": { "description": "422 AI_USAGE_OVERFLOW：任一统计计数或已知 token 累计超过 Number.MAX_SAFE_INTEGER，或测试配额投影超出有符号安全整数范围/不守恒；使用 BigInt 校验后转换为 JSON number，绝不输出运行时 BigInt、不舍入、不截断、不返回假零。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OverflowError" } } } },
+      "RateLimited": { "description": "429 RATE_LIMITED：宿主限流。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unavailable": { "description": "503 SERVICE_UNAVAILABLE：数据库、迁移截止时间读取或一致性读取失败，包括序列化冲突与死锁。不返回旧快照假成功。运行角色须有 schema_migrations(version,applied_at) 的 SELECT 权限。", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+    },
+    "schemas": {
+      "Count": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+      "NullableCount": { "anyOf": [{ "$ref": "#/components/schemas/Count" }, { "type": "null" }] },
+      "AiFeature": { "type": "string", "enum": ["menu_recognition", "website_chat", "website_generate"] },
+      "AiOrigin": { "type": "string", "enum": ["live", "legacy_import"] },
+      "UtcTimestamp": { "type": "string", "format": "date-time", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$" },
+      "BillingAccount": {
+        "type": "object", "additionalProperties": false, "required": ["id", "status"],
+        "properties": { "id": { "type": "string", "pattern": "^bla_[A-Za-z0-9_-]{24}$" }, "status": { "type": "string", "enum": ["active", "suspended", "closed"] } }
+      },
+      "NullableAccount": { "anyOf": [{ "$ref": "#/components/schemas/BillingAccount" }, { "type": "null" }] },
+      "BillingAccountResponse": {
+        "type": "object", "additionalProperties": false, "required": ["mode", "account", "payment_enabled"],
+        "properties": { "mode": { "const": "observation" }, "account": { "$ref": "#/components/schemas/NullableAccount" }, "payment_enabled": { "const": false } }
+      },
+      "AiCallTotals": {
+        "type": "object", "additionalProperties": false,
+        "required": ["calls", "known_usage_calls", "unknown_usage_calls", "pending_calls", "prompt_tokens", "completion_tokens", "total_tokens"],
+        "properties": {
+          "calls": { "$ref": "#/components/schemas/Count" }, "known_usage_calls": { "$ref": "#/components/schemas/Count" },
+          "unknown_usage_calls": { "$ref": "#/components/schemas/Count" }, "pending_calls": { "$ref": "#/components/schemas/Count" },
+          "prompt_tokens": { "$ref": "#/components/schemas/Count" }, "completion_tokens": { "$ref": "#/components/schemas/Count" }, "total_tokens": { "$ref": "#/components/schemas/Count" }
+        }
+      },
+      "FeatureTotals": {
+        "type": "object",
+        "allOf": [
+          { "$ref": "#/components/schemas/AiCallTotalsOpen" },
+          { "type": "object", "required": ["feature"], "properties": { "feature": { "$ref": "#/components/schemas/AiFeature" } } }
+        ],
+        "unevaluatedProperties": false
+      },
+      "AiCallTotalsOpen": {
+        "type": "object",
+        "required": ["calls", "known_usage_calls", "unknown_usage_calls", "pending_calls", "prompt_tokens", "completion_tokens", "total_tokens"],
+        "properties": {
+          "calls": { "$ref": "#/components/schemas/Count" }, "known_usage_calls": { "$ref": "#/components/schemas/Count" },
+          "unknown_usage_calls": { "$ref": "#/components/schemas/Count" }, "pending_calls": { "$ref": "#/components/schemas/Count" },
+          "prompt_tokens": { "$ref": "#/components/schemas/Count" }, "completion_tokens": { "$ref": "#/components/schemas/Count" }, "total_tokens": { "$ref": "#/components/schemas/Count" }
+        }
+      },
+      "AiUsageFilters": {
+        "type": "object", "additionalProperties": false, "required": ["restaurant_id", "feature", "origin", "from", "to"],
+        "properties": {
+          "restaurant_id": { "anyOf": [{ "type": "string", "pattern": "^[A-Za-z0-9_-]{16,64}$" }, { "type": "null" }] },
+          "feature": { "anyOf": [{ "$ref": "#/components/schemas/AiFeature" }, { "type": "null" }] },
+          "origin": { "anyOf": [{ "$ref": "#/components/schemas/AiOrigin" }, { "type": "null" }] },
+          "from": { "type": ["string", "null"], "format": "date", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+          "to": { "type": ["string", "null"], "format": "date", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-[0-9]{2}$" }
+        },
+        "oneOf": [
+          { "properties": { "from": { "type": "null" }, "to": { "type": "null" } } },
+          { "properties": { "from": { "type": "string" }, "to": { "type": "string" } } }
+        ]
+      },
+      "AiCreditPeriod": {
+        "description": "仅显式登记的 development_test 授额；UTC 自然月半开区间 starts_at<=created_at<ends_at，ends_at 为下一月首日，starts_at<=granted_at<ends_at。三项时间由同一 helper 原样返回 PG 六位微秒，不截断为 JS 毫秒。月底失效，不自动续发；不是付费订阅。",
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "starts_at", "ends_at", "granted_at", "timezone", "origin", "tokens_per_credit", "auto_renew"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^aqp_[A-Za-z0-9_-]{24}$" },
+          "starts_at": { "type": "string", "$ref": "#/components/schemas/UtcTimestamp", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-01T00:00:00\\.000000Z$" },
+          "ends_at": { "type": "string", "$ref": "#/components/schemas/UtcTimestamp", "pattern": "^(?!0000)[0-9]{4}-[0-9]{2}-01T00:00:00\\.000000Z$" },
+          "granted_at": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "timezone": { "const": "UTC" }, "origin": { "const": "development_test" },
+          "tokens_per_credit": { "const": 100 }, "auto_renew": { "const": false }
+        }
+      },
+      "Quota": {
+        "description": "数量仍为 raw tokens，仅显式登记且当前有效的 UTC 自然月测试授额 configured:true；010 普通 trial/paid 不构成配置。余额来自 period/ledger 投影而非历史调用求和。granted/reserved/consumed 为安全非负整数，available 为有界有符号安全整数，允许负余额；granted-reserved-consumed=available 的跨字段守恒由 helper 校验，客户端也应检查。始终不强制限额、不启用金钱收费。",
+        "oneOf": [
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["configured", "enforced", "available_tokens", "granted_tokens", "reserved_tokens", "consumed_tokens"],
+            "properties": { "configured": { "const": false }, "enforced": { "const": false }, "available_tokens": { "type": "null" }, "granted_tokens": { "type": "null" }, "reserved_tokens": { "type": "null" }, "consumed_tokens": { "type": "null" } }
+          },
+          {
+            "type": "object", "additionalProperties": false,
+            "required": ["configured", "enforced", "available_tokens", "granted_tokens", "reserved_tokens", "consumed_tokens", "period"],
+            "properties": {
+              "configured": { "const": true }, "enforced": { "const": false },
+              "available_tokens": { "type": "integer", "minimum": -9007199254740991, "maximum": 9007199254740991 },
+              "granted_tokens": { "$ref": "#/components/schemas/Count" }, "reserved_tokens": { "$ref": "#/components/schemas/Count" },
+              "consumed_tokens": { "$ref": "#/components/schemas/Count" }, "period": { "$ref": "#/components/schemas/AiCreditPeriod" }
+            }
+          }
+        ]
+      },
+      "CalendarMonthTotals": {
+        "description": "仅 configured:true 时提供的全账户授额后本月 live 调用统计；不受 filters 影响。starts_at<=call.created_at<ends_at 且 call.created_at>=granted_at；pending/unknown 单独计数，只有 known 实际用量进入 token 累计。不包含授额前调用，不由历史总和反推消费余额。period_id 与 quota.period.id 相同。",
+        "type": "object", "additionalProperties": false, "required": ["period_id", "totals"],
+        "properties": {
+          "period_id": { "type": "string", "pattern": "^aqp_[A-Za-z0-9_-]{24}$" },
+          "totals": { "$ref": "#/components/schemas/AiCallTotals" }
+        }
+      },
+      "LegacyAggregate": {
+        "description": "独立全账户 all time aggregate；不是逐调用，不随 filters 改变。只有已知 total 的合法历史摘要进入 known_total_tokens；未知历史菜单和对话不推算。aggregate_jobs 与 unknown_usage_jobs 可能重叠。",
+        "type": "object", "additionalProperties": false, "required": ["aggregate_jobs", "known_total_tokens", "unknown_usage_jobs"],
+        "properties": { "aggregate_jobs": { "$ref": "#/components/schemas/Count" }, "known_total_tokens": { "$ref": "#/components/schemas/Count" }, "unknown_usage_jobs": { "$ref": "#/components/schemas/Count" } }
+      },
+      "AiUsageReport": {
+        "type": "object", "additionalProperties": false,
+        "required": ["mode", "policy_version", "generated_at", "billing_account", "quota", "filters", "account_totals", "filtered_totals", "by_feature", "legacy"],
+        "properties": {
+          "mode": { "const": "observation" }, "policy_version": { "const": "observation-v1" }, "generated_at": { "$ref": "#/components/schemas/UtcTimestamp" },
+          "billing_account": { "$ref": "#/components/schemas/NullableAccount" }, "quota": { "$ref": "#/components/schemas/Quota" }, "filters": { "$ref": "#/components/schemas/AiUsageFilters" },
+          "account_totals": { "$ref": "#/components/schemas/AiCallTotals" }, "filtered_totals": { "$ref": "#/components/schemas/AiCallTotals" },
+          "by_feature": { "type": "array", "maxItems": 3, "items": { "$ref": "#/components/schemas/FeatureTotals" } }, "legacy": { "$ref": "#/components/schemas/LegacyAggregate" },
+          "calendar_month_totals": { "$ref": "#/components/schemas/CalendarMonthTotals" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "quota": { "type": "object", "properties": { "configured": { "const": false } }, "required": ["configured"] } }, "required": ["quota"] },
+            "then": { "properties": { "calendar_month_totals": false } }
+          }
+        ]
+      },
+      "AiUsageCall": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "restaurant_id", "restaurant_name", "job_id", "feature", "model", "provider", "call_index", "call_status", "usage_status", "origin", "chargeable", "prompt_tokens", "completion_tokens", "total_tokens", "elapsed_ms", "error_code", "created_at", "finished_at"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^aic_[A-Za-z0-9_-]{24}$" }, "restaurant_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{16,64}$" },
+          "restaurant_name": { "type": ["string", "null"] }, "job_id": { "type": "string" },
+          "feature": { "$ref": "#/components/schemas/AiFeature" }, "model": { "type": "string", "minLength": 1, "maxLength": 100 }, "provider": { "const": "deepseek" },
+          "call_index": { "type": "integer", "minimum": 1, "maximum": 2147483647 }, "call_status": { "type": "string", "enum": ["started", "completed", "failed"] },
+          "usage_status": { "type": "string", "enum": ["pending", "known", "unknown"] }, "origin": { "$ref": "#/components/schemas/AiOrigin" }, "chargeable": { "const": false },
+          "prompt_tokens": { "$ref": "#/components/schemas/NullableCount" }, "completion_tokens": { "$ref": "#/components/schemas/NullableCount" }, "total_tokens": { "$ref": "#/components/schemas/NullableCount" },
+          "elapsed_ms": { "$ref": "#/components/schemas/NullableCount" }, "error_code": { "type": ["string", "null"], "pattern": "^[A-Z][A-Z0-9_]{1,63}$" },
+          "created_at": { "$ref": "#/components/schemas/UtcTimestamp" }, "finished_at": { "anyOf": [{ "$ref": "#/components/schemas/UtcTimestamp" }, { "type": "null" }] }
+        },
+        "allOf": [
+          { "if": { "properties": { "usage_status": { "const": "known" } } }, "then": { "properties": { "prompt_tokens": { "$ref": "#/components/schemas/Count" }, "completion_tokens": { "$ref": "#/components/schemas/Count" }, "total_tokens": { "$ref": "#/components/schemas/Count" } } }, "else": { "properties": { "prompt_tokens": { "type": "null" }, "completion_tokens": { "type": "null" }, "total_tokens": { "type": "null" } } } },
+          { "if": { "properties": { "call_status": { "const": "started" } } }, "then": { "properties": { "usage_status": { "const": "pending" }, "finished_at": { "type": "null" }, "elapsed_ms": { "type": "null" }, "error_code": { "type": "null" } } }, "else": { "properties": { "usage_status": { "enum": ["known", "unknown"] }, "finished_at": { "$ref": "#/components/schemas/UtcTimestamp" } } } },
+          { "if": { "properties": { "call_status": { "enum": ["started", "completed"] } } }, "then": { "properties": { "error_code": { "type": "null" } } } }
+        ]
+      },
+      "AiUsageCalls": {
+        "type": "object", "additionalProperties": false, "required": ["filters", "items", "next_cursor"],
+        "properties": { "filters": { "$ref": "#/components/schemas/AiUsageFilters" }, "items": { "type": "array", "maxItems": 50, "items": { "$ref": "#/components/schemas/AiUsageCall" } }, "next_cursor": { "type": ["string", "null"], "minLength": 1, "maxLength": 2048, "pattern": "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]{43}$" } }
+      },
+      "Error": {
+        "type": "object", "additionalProperties": false, "required": ["code", "message", "request_id", "details"],
+        "properties": { "code": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]+$" }, "message": { "type": "string" }, "request_id": { "type": "string", "minLength": 1 }, "details": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["field", "code"], "properties": { "field": { "type": "string" }, "code": { "type": "string" } } } } }
+      },
+      "OverflowError": { "allOf": [{ "$ref": "#/components/schemas/Error" }, { "type": "object", "properties": { "code": { "const": "AI_USAGE_OVERFLOW" } } }] }
+    }
+  }
+}

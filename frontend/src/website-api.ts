@@ -242,7 +242,7 @@ async function request<T>(path: string, read: (response: Response) => Promise<T>
   try {
     const headers = new Headers({ Accept: options.accept ?? 'application/json' });
     if (options.body !== undefined) {
-      if (!options.csrfOnly && (!options.key || !/^[A-Za-z0-9_-]{16,128}$/.test(options.key))) throw new ApiError(400, 'REQUEST_INVALID');
+      if (!options.csrfOnly && (!options.key || !/^[A-Za-z0-9_.:-]{16,128}$/.test(options.key))) throw new ApiError(400, 'REQUEST_INVALID');
       await abortable(refreshCsrf(), controller.signal);
       headers.set('X-CSRF-Token', getCsrfToken());
       headers.set('Content-Type', 'application/json');
@@ -300,18 +300,25 @@ export const websiteApi = {
   generate: (restaurantId: string, body: WebsiteGenerateInput, key: string, signal?: AbortSignal) => {
     if (!body.brief.trim() || body.brief.length > 3000 || body.asset_ids.length > 8 || new Set(body.asset_ids).size !== body.asset_ids.length
       || body.asset_ids.some(id => !idPattern.test(id)) || body.public_assets_confirmed !== true
-      || !Number.isSafeInteger(body.expected_restaurant_revision) || body.expected_restaurant_revision < 1) throw new ApiError(422, 'REQUEST_INVALID');
-    return request(`${basePath(restaurantId)}/generations`, async response => readAccepted(await json(response)), { body, key, signal, expectedStatus: 202 });
+      || (body.image_vision_confirmed !== undefined && body.image_vision_confirmed !== true)
+      || !Number.isSafeInteger(body.expected_restaurant_revision) || body.expected_restaurant_revision < 1
+      || (body.expected_menu_revision !== undefined && (!Number.isSafeInteger(body.expected_menu_revision) || body.expected_menu_revision < 0))) throw new ApiError(422, 'REQUEST_INVALID');
+    return request(`${basePath(restaurantId)}/generations`, async response => readAccepted(await json(response)), { body: structuredClone(body), key, signal, expectedStatus: 202 });
   },
   publish: (restaurantId: string, body: WebsitePublishInput, key: string, signal?: AbortSignal) => {
-    if (!idPattern.test(body.version_id) || (body.slug !== undefined && !websiteSlugPattern.test(body.slug))
+    if (Object.keys(body).some(field => !['version_id', 'slug', 'expected_revision', 'expected_checksum', 'expected_public_content_hash', 'content_mode', 'review_confirmed'].includes(field))
+      || !idPattern.test(body.version_id) || (body.slug !== undefined && !websiteSlugPattern.test(body.slug))
       || !Number.isSafeInteger(body.expected_revision) || body.expected_revision < 0) throw new ApiError(422, 'REQUEST_INVALID');
+    const enhanced = ['expected_checksum', 'expected_public_content_hash', 'content_mode', 'review_confirmed'].some(field => Object.hasOwn(body, field));
+    if (enhanced && (!/^[a-f0-9]{64}$/.test(body.expected_checksum ?? '') || !/^[a-f0-9]{64}$/.test(body.expected_public_content_hash ?? '')
+      || !['current', 'historical'].includes(body.content_mode ?? '') || body.review_confirmed !== true)) throw new ApiError(422, 'REQUEST_INVALID');
+    const frozenBody = structuredClone(body);
     return request(`${basePath(restaurantId)}/publication`, async response => {
       const publication = readPublication(await json(response));
       // 幂等回执描述原动作，不表示此刻的发布指针或部署配置。
-      if (publication.published_version_id !== body.version_id) throw invalid();
+      if (publication.published_version_id !== frozenBody.version_id) throw invalid();
       return publication;
-    }, { body, key, signal, expectedStatus: 200 });
+    }, { body: frozenBody, key, signal, expectedStatus: 200 });
   },
   preview: (restaurantId: string, version: WebsiteVersion, signal?: AbortSignal) => {
     if (version.restaurant_id !== restaurantId) throw new ApiError(400, 'REQUEST_INVALID');
@@ -352,6 +359,9 @@ const errorMessages: Record<string, string> = {
   AI_RESPONSE_INVALID: '模型服务响应未通过格式检查，请核对任务记录。',
   WEBSITE_HTML_INVALID: '网页文档未通过安全或格式校验，不能使用该文档预览或发布。',
   WEBSITE_HTML_TOO_LARGE: '网页文档超过大小上限，请简化需求后重新确认生成。',
+  WEBSITE_IMAGE_SOURCE_UNAVAILABLE: '所选照片读取或授权核验失败，未跳过图片生成。请核查素材，重新确认后再生成。',
+  WEBSITE_VISION_LIMIT: '图片视觉输入未满足缩图大小或安全处理时限，请核查照片；这是单次素材处理保护，不是累计token限制。',
+  WEBSITE_VISION_INVALID: '图片视觉输入与已选素材不匹配，任务已停止。请核查素材和授权后再生成。',
   WEBSITE_CONTEXT_REVOKED: '任务使用的餐厅资料或素材授权已失效，请刷新资料与素材，重新确认公开权限。',
   AI_DAILY_LIMIT_EXCEEDED: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
   WEBSITE_DAILY_LIMIT_EXCEEDED: '已达到每账号每日 30 个建站任务 / 对话 / 识图的合计上限（不是模型调用次数），请明日再试。',
@@ -368,7 +378,7 @@ const errorMessages: Record<string, string> = {
   DEPLOYMENT_NOT_CONFIGURED: '本地发布服务尚未配置，未执行发布。云端托管也未验收。',
   ASSET_NOT_READY: '所选素材不可用，请刷新素材并重新选择真实上传文件。',
   ASSET_NOT_FOUND: '所选素材已删除或不属于当前餐厅，请刷新素材。',
-  REQUEST_INVALID: '请核对填写长度、版本、素材数量及公开授权确认。',
+  REQUEST_INVALID: '请核对填写长度、版本、素材数量、公开授权及所选图片的独立外发确认。',
   RESPONSE_INVALID: '服务响应与网页接口契约不一致，结果尚不能确认。请核查状态，不要重复付费。',
   REQUEST_TIMEOUT: '请求超时，结果未知。请“核查并重试”，保留原内容和幂等键，避免重复付费。',
   NETWORK_ERROR: '服务连接失败，结果未知。请“核查并重试”，不会静默换键。',

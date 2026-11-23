@@ -5,7 +5,9 @@ export interface WebsiteAgentProgress { phase: 'planning' | 'writing' | 'checkin
 export interface WebsiteAgentEvent { action: string; status: 'ok' | 'error'; round: number; message: string; diagnostics: WebsiteDiagnostic[]; model_call?: { index: number; prompt_tokens: number | null; completion_tokens: number | null; total_tokens: number | null; elapsed_ms: number; status: 'started' | 'completed' | 'failed'; error_code?: string } }
 export interface WebsiteAgentObservation { progress: WebsiteAgentProgress; event: WebsiteAgentEvent; draft?: Pick<WebsiteOutput, 'html_body' | 'css' | 'summary'> }
 export interface WebsiteToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
-export type WebsiteToolMessage = { role: 'system' | 'user'; content: string } | { role: 'assistant'; content: string | null; tool_calls: WebsiteToolCall[] } | { role: 'tool'; tool_call_id: string; content: string };
+export interface WebsiteVisionImage { asset_id: string; mime_type: 'image/jpeg'; data_url: string; width_px: number; height_px: number }
+export type WebsiteUserContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail: 'original' } };
+export type WebsiteToolMessage = { role: 'system'; content: string } | { role: 'user'; content: string | WebsiteUserContentPart[] } | { role: 'assistant'; content: string | null; tool_calls: WebsiteToolCall[] } | { role: 'tool'; tool_call_id: string; content: string };
 export interface WebsiteToolDefinition { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }
 export interface WebsiteToolExchange { message: { role: 'assistant'; content: string | null; tool_calls: WebsiteToolCall[] }; usage: WebsiteOutput['usage'] }
 export interface WebsiteAgentResult extends WebsiteOutput { html: string; checksum: string; progress: WebsiteAgentProgress }

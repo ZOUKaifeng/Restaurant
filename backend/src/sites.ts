@@ -8,6 +8,8 @@ import { WEBSITE_CSP, WEBSITE_SANDBOX } from './website-html.js';
 import { parse, serialize, type DefaultTreeAdapterMap } from 'parse5';
 import { ApiError } from './errors.js';
 import { id } from './db.js';
+import { randomUUID } from 'node:crypto';
+import { installSiteAnalytics } from './analytics-site.js';
 import {
   cancelGuestReservation, createReservation, readPublicSite, readReservationByToken,
   type PublicSite, type ReservationRecord,
@@ -105,7 +107,8 @@ function successPage(row: ReservationRecord, token: string | null): string {
 
 export function createSiteApp({ pool, config }: { pool: Pool; config: Config }) {
   if (config.nodeEnv === 'production' || !config.website || !['localhost', '127.0.0.1'].includes(new URL(config.website.publicOrigin).hostname)) throw new Error('本地站点服务不是公网部署，不允许生产模式');
-  const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 16384, requestTimeout: 15000 });
+  const app = Fastify({ logger: false, trustProxy: false, bodyLimit: 16384, requestTimeout: 15000,
+    requestIdHeader: false, genReqId: () => randomUUID() });
   const store = createAssetStore(config);
   const hostnames = new Set(['localhost', '127.0.0.1']);
   app.register(rateLimit, { max: 90, timeWindow: '1 minute' });
@@ -123,28 +126,34 @@ export function createSiteApp({ pool, config }: { pool: Pool; config: Config }) 
     let hostname = '';
     try { hostname = new URL(`http://${host}`).hostname; } catch { /* 无效主机拒绝。 */ }
     if (!hostnames.has(hostname)) return reply.code(403).type('text/plain').send('Invalid local host');
-    const writable = request.method === 'POST' && (path.endsWith('/reserve') || /^\/r\/[A-Za-z0-9_-]{43}\/cancel$/.test(path));
+    const writable = request.method === 'POST' && (path.endsWith('/reserve') || /^\/r\/[A-Za-z0-9_-]{43}\/cancel$/.test(path)
+      || /^\/s\/[a-z0-9][a-z0-9-]{1,48}[a-z0-9]\/events$/.test(path));
     if (!['GET', 'HEAD'].includes(request.method) && !writable) return reply.code(405).header('Allow', 'GET, HEAD').send('Read-only website service');
   });
   app.addHook('onClose', async () => store.close());
   app.setErrorHandler((_, __, reply) => reply.code(503).type('text/plain').send('Website temporarily unavailable'));
   app.setNotFoundHandler((_, reply) => reply.code(404).type('text/plain').send('Website not found'));
-  app.get('/health/ready', async () => { await pool.query('SELECT 1'); return { status: 'ready', mode: 'local', production_acceptance_complete: false }; });
+  const analytics = installSiteAnalytics(app, pool, config);
+  app.get('/health/ready', async () => { await pool.query('SELECT 1'); return { status: 'ready', mode: 'local', analytics_namespace: 'local_test', production_acceptance_complete: false }; });
   app.get('/s/:slug', async (request, reply) => {
     if (Object.keys(request.query as object).length) return reply.code(404).send('Website not found');
     const { slug } = request.params as { slug: string };
     const site = await readPublicWebsite(pool, slug);
     if (!site) return reply.code(404).send('Website not found');
     const urls = new Map(site.assets.map(asset => [asset.id, `/s/${site.slug}/media/${asset.id}?version=${site.version_id}`]));
-    const html = rewritePublicAssetReferences(site.html, urls).replaceAll('__SITE_RESERVE__', `/s/${site.slug}/reserve`);
+    const html = rewritePublicAssetReferences(site.html, urls).replaceAll('__SITE_RESERVE__', `/s/${site.slug}/go/reserve`);
+    analytics.track(request, reply, site, 'page_view');
     return reply.type('text/html; charset=utf-8').send(html);
   });
   app.get('/s/:slug/reserve', async (request, reply) => {
     const { slug } = request.params as { slug: string };
-    if (!SLUG.test(slug)) return reply.code(404).send('Website not found');
-    const site = await readPublicSite(pool, slug);
-    if (!site || !site.enabled) return reply.code(404).send('Website not found');
-    return reply.type('text/html; charset=utf-8').send(formPage(site, slug, {}));
+    if (!SLUG.test(slug) || Object.keys(request.query as object).length) return reply.code(404).send('Website not found');
+    const published = await readPublicWebsite(pool, slug);
+    const site = published ? await readPublicSite(pool, slug) : null;
+    if (!site || !site.enabled || !published) return reply.code(404).send('Website not found');
+    const html = formPage(site, slug, {});
+    analytics.track(request, reply, published, 'reservation_form_view');
+    return reply.type('text/html; charset=utf-8').send(html);
   });
   app.post('/s/:slug/reserve', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (request, reply) => {
     const { slug } = request.params as { slug: string };

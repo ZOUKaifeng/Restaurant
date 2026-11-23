@@ -5,7 +5,8 @@ import type { Config } from './config.js';
 import { audit, id, transaction, type Database } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import { equal, lockAuthenticated, requireSession, requireWrite } from './security.js';
-import { contract, input, validateParameter, validateIntervals, validTimezone, type Interval, type Input } from './validation.js';
+import { contract, input, validateParameter, validTimezone, type Input } from './validation.js';
+import { applyRestaurantContent, normalizeOpeningHours, type RestaurantContentRow } from './restaurant-content.js';
 
 const fields = Object.keys(contract.components.schemas.RestaurantCreateInput.properties) as string[];
 const select = `SELECT r.*,r.created_at::text AS cursor_created_at,m.role,
@@ -34,10 +35,10 @@ function restaurantId(request: FastifyRequest): string {
 }
 async function owned(db: Database, userId: string, rid: string, lock = false): Promise<Row> {
   if (lock) {
-    const locked = await db.query(`SELECT r.id FROM restaurants r
-      JOIN restaurant_members m ON m.restaurant_id=r.id AND m.user_id=$1 AND m.status='active' AND m.role='owner'
-      WHERE r.id=$2 FOR UPDATE OF r,m`, [userId, rid]);
-    if (!locked.rows[0]) throw new ApiError(404);
+    const locked = await db.query('SELECT id FROM restaurants WHERE id=$1 FOR UPDATE', [rid]);
+    const member = await db.query(`SELECT id FROM restaurant_members WHERE restaurant_id=$1 AND user_id=$2
+      AND status='active' AND role='owner' FOR UPDATE`, [rid, userId]);
+    if (!locked.rows[0] || !member.rows[0]) throw new ApiError(404);
   }
   // READ COMMITTED 下下一条语句取得锁等待后主行及营业段的一致新快照。
   const result = await db.query(`${select} WHERE r.id=$2`, [userId, rid]);
@@ -49,7 +50,7 @@ function match(request: FastifyRequest, row: Row): void {
   if (value === undefined) throw new ApiError(428);
   validateParameter('IfMatch', value);
   if (value !== etag(row)) throw new ApiError(412);
-  if (row.status !== 'draft') throw new ApiError(409);
+  if (!['draft', 'active'].includes(row.status)) throw new ApiError(409, 'RESTAURANT_UNAVAILABLE');
 }
 function fingerprint(body: Input): string {
   const normalized = fields.map(field => [field, body[field] ?? null]);
@@ -121,10 +122,7 @@ export function registerRestaurants(app: FastifyInstance, pool: Pool, config: Co
       const current = await owned(db, session.user.id, rid, true);
       match(request, current);
       const body = input('RestaurantPatchInput', request.body);
-      if (body.timezone === null && current.intervals.length) invalid('timezone', 'OPENING_HOURS_REQUIRE_TIMEZONE');
-      const columns = fields.filter(field => Object.hasOwn(body, field));
-      await db.query(`UPDATE restaurants SET ${columns.map((field, i) => `${field}=$${i + 2}`).join(',')},revision=revision+1,updated_at=now() WHERE id=$1`, [rid, ...columns.map(field => body[field])]);
-      await audit(db, session.user.id, 'update_restaurant', rid, request.id, columns, rid);
+      await applyRestaurantContent(db, rid, current as RestaurantContentRow, { patch: body }, request.id, session.user.id);
       return owned(db, session.user.id, rid);
     });
     return reply.header('ETag', etag(row)).send(view(row));
@@ -143,13 +141,8 @@ export function registerRestaurants(app: FastifyInstance, pool: Pool, config: Co
       match(request, current);
       if (!validTimezone(current.timezone)) invalid('timezone', 'TIMEZONE_REQUIRED');
       const body = input('OpeningHoursInput', request.body);
-      const intervals = body.intervals as Interval[];
-      validateIntervals(intervals);
-      await db.query('DELETE FROM opening_hours WHERE restaurant_id=$1', [rid]);
-      for (const interval of intervals) await db.query(`INSERT INTO opening_hours(id,restaurant_id,weekday,opens_at_local,closes_at_local,closes_day_offset,accepts_requests,sort_order)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [id('hours'), rid, interval.weekday, interval.opens_at_local, interval.closes_at_local, interval.closes_day_offset, interval.accepts_requests, interval.sort_order]);
-      await db.query('UPDATE restaurants SET revision=revision+1,updated_at=now() WHERE id=$1', [rid]);
-      await audit(db, session.user.id, 'replace_opening_hours', rid, request.id, ['opening_hours'], rid);
+      await applyRestaurantContent(db, rid, current as RestaurantContentRow,
+        { intervals: normalizeOpeningHours(body.intervals) }, request.id, session.user.id);
       return owned(db, session.user.id, rid);
     });
     return reply.header('ETag', etag(row)).send(hours(row));

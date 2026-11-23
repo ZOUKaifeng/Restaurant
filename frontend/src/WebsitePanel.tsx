@@ -1,81 +1,63 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
-import { ApiError } from './api';
+import { ApiError, onSessionExpired } from './api';
+import WebsiteWorkbench, { savedContentReview, WebsiteContentReviewPanel, WebsiteDifferences } from './WebsiteWorkbench';
+import { websiteContentClient } from './website-content-client';
 import { assetApi } from './asset-api';
 import type { Asset, AssetKind } from './assets-types';
 import { profileFields } from './profile';
 import type { Restaurant } from './types';
 import {
   isWebsiteJobActive, isWebsiteWriteUncertain, safeLocalPublicationUrl,
-  websiteApi, websiteErrorMessage, websiteJobErrorMessage, websiteSlugPattern,
+  websiteApi, websiteSlugPattern,
 } from './website-api';
 import {
   buildPreviewDocument, previewImageUrl, rewriteWebsitePreview, textDataUrl,
 } from './website-preview';
-import { ReservationSettingsPanel } from './ReservationSettingsPanel';
+import type { WebsiteContentReview, WebsiteContentVersion, WebsiteEditableContent, WebsiteWorkbenchReport, WebsitePublishInput } from './website-types';
+import WebsiteAssetThumbnail from './WebsiteAssetThumbnail';
 import type { WebsiteAccepted, WebsiteAttempt, WebsiteDiagnostic, WebsiteJob, WebsiteModelCall, WebsiteProgress, WebsiteState, WebsiteUsage, WebsiteVersion } from './website-types';
 
-type Draft = { brief: string; assetIds: string[]; message: string; confirmed: boolean };
+type Draft = { brief: string; assetIds: string[]; message: string; confirmed: boolean; visionConfirmed: boolean };
 type Saved = Pick<Draft, 'brief' | 'assetIds'>;
 type Preview = {
-  versionId: string; checksum: string; documentUrl: string; fullUrl: string; reducedImages: number;
+  versionId: string; versionNumber: number; checksum: string; documentUrl: string; fullUrl: string; reducedImages: number;
   pdfs: Array<{ id: string; url: string }>; originals: Array<{ id: string; url: string; label: string }>;
 };
 
 type Acknowledged = WebsiteAccepted & { kind: 'chat' | 'generate' };
-const kindLabels: Record<AssetKind, string> = { menu_source: '菜单原文件', logo: 'Logo', restaurant_photo: '餐厅图片', dish_photo: '菜品图片' };
-const jobLabels = { queued: '排队中', running: '正在处理', succeeded: '已完成', failed: '已失败' };
+const kindLabels: Record<AssetKind, string> = { menu_source: 'Original menu file', logo: 'Logo', restaurant_photo: 'Restaurant photo', dish_photo: 'Dish photo' };
+const jobLabels = { queued: 'Queued', running: 'Running', succeeded: 'Completed', failed: 'Failed' };
 const phaseLabels: Record<WebsiteProgress['phase'], string> = {
-  planning: '制定建站计划', writing: '编写网页草稿', checking: '执行真实检查',
-  repairing: '根据检查结果修复', ready: '检查通过', failed: '已停止',
+  planning: 'Planning', writing: 'Writing', checking: 'Checking',
+  repairing: 'Repairing', ready: 'Checks passed', failed: 'Stopped',
 };
-const planStatusLabels = { pending: '待办', in_progress: '进行中', completed: '已完成' };
-const callStatusLabels = { started: '进行中', completed: '已完成', failed: '已失败' };
-function countLabel(value: number | null | undefined) { return value == null ? '未知' : value.toLocaleString('zh-CN'); }
-function elapsedLabel(value: number | null | undefined) { return value == null ? '未知' : `${value.toLocaleString('zh-CN')} ms`; }
-function roundLabel(round: number) { return round === 0 ? '准备第1稿' : round === 1 ? '第1稿' : `修复第${round - 1}轮`; }
+const planStatusLabels = { pending: 'Pending', in_progress: 'In progress', completed: 'Completed' };
+const callStatusLabels = { started: 'In progress', completed: 'Completed', failed: 'Failed' };
+function countLabel(value: number | null | undefined) { return value == null ? 'Unknown' : value.toLocaleString('zh-CN'); }
+function elapsedLabel(value: number | null | undefined) { return value == null ? 'Unknown' : `${value.toLocaleString('zh-CN')} ms`; }
+function roundLabel(round: number) { return round === 0 ? 'Preparing draft' : round === 1 ? 'First draft' : `Repair ${round - 1}`; }
 function ModelCallCounts({ call }: { call: WebsiteModelCall }) {
-  return <p className="micro">调用 #{call.index} · {callStatusLabels[call.status]} · 输入 {countLabel(call.prompt_tokens)} / 输出 {countLabel(call.completion_tokens)} / 总计 {countLabel(call.total_tokens)} tokens · 耗时 {elapsedLabel(call.elapsed_ms)}{[call.prompt_tokens, call.completion_tokens, call.total_tokens].some(value => value === null) && ' · 未知用量不按 0 计算'}</p>;
+  return <p className="micro">Call #{call.index} · {callStatusLabels[call.status]} · Input {countLabel(call.prompt_tokens)} / output {countLabel(call.completion_tokens)} / total {countLabel(call.total_tokens)} tokens · {elapsedLabel(call.elapsed_ms)}</p>;
 }
 function Diagnostics({ items }: { items: WebsiteDiagnostic[] }) {
-  return <ul className="website-diagnostics" aria-label="服务端检查诊断">{items.map((item, index) => <li key={index}>
-    <span className="website-diagnostic-location">{item.file} · 行 {item.line} / 列 {item.column} · <code>{item.code}</code></span>
-    <p>{item.message}</p>
-  </li>)}</ul>;
+  return <ul className="website-diagnostics" aria-label="Server diagnostics">{items.map((item, index) => <li key={index}><span>{item.file} · line {item.line} / column {item.column} · <code>{item.code}</code></span><p>{item.message}</p></li>)}</ul>;
 }
-function AgentProgress({ job, waiting, stale, headingId }: {
-  job: WebsiteJob | undefined; waiting: boolean; stale: boolean; headingId: string;
-}) {
+function AgentProgress({ job, waiting, stale, headingId }: { job: WebsiteJob | undefined; waiting: boolean; stale: boolean; headingId: string }) {
   const progress = job?.progress;
   const trace = job?.trace ?? [];
   const diagnostics = progress?.diagnostics ?? [...trace].reverse().find(item => !item.model_call && !/model|模型/i.test(item.action) && item.diagnostics.length)?.diagnostics ?? [];
-  const failed = job?.status === 'failed';
   return <section className="website-section website-agent-progress" aria-labelledby={headingId}>
-    <div className="row-heading"><h3 id={headingId}>Agent建站进度</h3>{job && <time className="micro" dateTime={job.created_at}>{formatTime(job.created_at)}</time>}</div>
-    <div aria-live="polite">
-      {stale && <p className="micro">以下为上次成功读取的记录；状态核查已停止，请手动核查，不代表后台已停止。</p>}
-      {waiting ? <p>生成任务已受理，等待服务端持久进度；尚不能确认已开始写稿。</p>
-        : !job ? <p className="micro">尚无生成任务。提交后读取服务端计划、草稿检查与修复记录，不模拟进度。</p>
-          : <>
-            <p>当前步骤：{failed ? '已停止' : progress ? phaseLabels[progress.phase] : jobLabels[job.status]}
-              {progress && <> · {progress.round === 0 && progress.phase === 'planning' ? '准备第1稿' : roundLabel(progress.round)}</>}</p>
-            {progress ? <><p className="micro">已知模型调用 {countLabel(progress.model_calls)} 次 · 已知输入 {countLabel(progress.prompt_tokens)} / 输出 {countLabel(progress.completion_tokens)} / 累计 {countLabel(progress.total_tokens)} tokens · 耗时 {elapsedLabel(progress.elapsed_ms)}（服务端计数）</p><p className="micro">累计仅代表服务端已知用量；未返回的 token 计数为未知，不按 0 计算，不据此估算费用。</p></>
-              : <p className="micro">此任务未提供进度；模型调用次数和 tokens 未知，不按任务数估算。</p>}
-            {failed ? <p className="notice">{websiteJobErrorMessage(job.error_code)} 新生成须由你重新核对并点击下方生成按钮，可能产生新费用。</p>
-              : job.status === 'succeeded' && progress?.phase === 'ready' ? <p className="notice">检查通过，等待你预览发布</p> : null}
-          </>}
+    <div className="row-heading"><h3 id={headingId}>AI design progress</h3>{job && <time className="micro" dateTime={job.created_at}>{formatTime(job.created_at)}</time>}</div>
+    <div aria-live="polite">{stale && <p className="wb-notice">Checking paused. This is the last confirmed record, not proof that the job stopped.</p>}
+      <p>{waiting ? "Generation accepted. Waiting for recorded progress." : !job ? "No design job yet." : job.status === "failed" ? "Generation failed. No automatic restart." : progress ? phaseLabels[progress.phase] : jobLabels[job.status]}</p>
+      {job?.status === "failed" && <p className="wb-notice">{job.error_code ?? "Unknown error"}. Check the saved facts and design brief before creating another draft.</p>}
     </div>
-    {progress && <ol className="website-agent-plan" aria-label="Agent建站计划">{progress.plan.map(item => <li key={item.id}>
-      <span className={`website-plan-status ${item.status}`}>{planStatusLabels[item.status]}</span><span>{item.title}</span>
-    </li>)}</ol>}
-    {progress?.plan.length === 0 && <p className="micro">服务端尚未返回计划条目。</p>}
-    {diagnostics.length > 0 && <div className="website-agent-checks"><h3>检查结果</h3><Diagnostics items={diagnostics} /><p className="micro">行 / 列为 0 表示服务端未提供具体位置；这里只展示诊断，不展示私有草稿。</p></div>}
-    {job && <details className="website-agent-details"><summary>模型与工具详情（服务端记录）</summary>
-      <p className="micro">{progress ? `此任务已知调用 ${progress.model_calls} 次，累计 ${progress.total_tokens.toLocaleString('zh-CN')} tokens。` : '此任务调用与 tokens 未知。'} 仅读取后端进度与工具轨迹；计数不是金额，不估算实际费用。</p>
-      {trace.length ? <ol className="website-agent-trace">{trace.map((item, index) => <li key={index}>
-        <p>{item.round === 0 ? '计划阶段' : roundLabel(item.round)} · {item.action} · {item.model_call ? callStatusLabels[item.model_call.status] : item.status === 'ok' ? '完成' : '错误'}</p>
-        {item.model_call ? <ModelCallCounts call={item.model_call} /> : /model|模型/i.test(item.action) ? <p className="micro">此旧模型记录未提供逐次用量；不展示模型输入、输出或请求内容。</p> : <><p>{item.message}</p>{item.diagnostics.length > 0 && <Diagnostics items={item.diagnostics} />}</>}
-      </li>)}</ol> : <p className="micro">暂无工具轨迹；不代表已执行真实检查。</p>}
+    {diagnostics.length > 0 && <details><summary>Check results · {diagnostics.length}</summary><Diagnostics items={diagnostics} /><p className="micro">Line / column 0 means no location was provided. Private source is never shown.</p></details>}
+    {job && <details className="website-agent-details"><summary>Plan, model & tool details</summary>
+      {progress && <><p className="micro">{roundLabel(progress.round)} · {countLabel(progress.model_calls)} calls · input {countLabel(progress.prompt_tokens)} / output {countLabel(progress.completion_tokens)} / total {countLabel(progress.total_tokens)} tokens · {elapsedLabel(progress.elapsed_ms)}</p><ol>{progress.plan.map(item => <li key={item.id}>{planStatusLabels[item.status]} · {item.title}</li>)}</ol></>}
+      <p className="micro">Observation mode. Recorded tokens are not a bill; unknown usage is not zero. Raw model input and output are never shown.</p>
+      {trace.length ? <ol>{trace.map((item, index) => <li key={index}><p>{roundLabel(item.round)} · {item.action} · {item.model_call ? callStatusLabels[item.model_call.status] : item.status}</p>{item.model_call ? <ModelCallCounts call={item.model_call} /> : /model|模型/i.test(item.action) ? <p className="micro">Legacy model usage is unknown.</p> : <><p>{item.message}</p>{item.diagnostics.length > 0 && <Diagnostics items={item.diagnostics} />}</>}</li>)}</ol> : <p className="micro">No tool trace recorded.</p>}
     </details>}
   </section>;
 }
@@ -87,7 +69,7 @@ function restoreAttempt(id: string): WebsiteAttempt | null {
     const value = sessionStorage.getItem(storageKey(id));
     if (!value) return null;
     const item = JSON.parse(value) as WebsiteAttempt;
-    if (!item || typeof item.key !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(item.key) || !item.body) return null;
+    if (!item || typeof item.key !== 'string' || !/^[A-Za-z0-9_.:-]{16,128}$/.test(item.key) || !item.body) return null;
     const validRevision = (value: number) => Number.isSafeInteger(value) && value >= 0;
     if (item.kind === 'chat' && typeof item.body.message === 'string' && item.body.message.trim() && item.body.message.length <= 2000 && validRevision(item.body.expected_revision)) {
       return { kind: 'chat', key: item.key, body: { message: item.body.message, expected_revision: item.body.expected_revision } };
@@ -95,33 +77,41 @@ function restoreAttempt(id: string): WebsiteAttempt | null {
     if (item.kind === 'generate' && typeof item.body.brief === 'string' && item.body.brief.trim() && item.body.brief.length <= 3000
       && Array.isArray(item.body.asset_ids) && item.body.asset_ids.length <= 8 && new Set(item.body.asset_ids).size === item.body.asset_ids.length
       && item.body.asset_ids.every(id => typeof id === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(id))
-      && item.body.public_assets_confirmed === true && validRevision(item.body.expected_restaurant_revision) && item.body.expected_restaurant_revision >= 1) {
+      && item.body.public_assets_confirmed === true
+      && (item.body.image_vision_confirmed === undefined || item.body.image_vision_confirmed === true)
+      && validRevision(item.body.expected_restaurant_revision) && item.body.expected_restaurant_revision >= 1
+      && (item.body.expected_menu_revision === undefined || validRevision(item.body.expected_menu_revision))) {
       return { kind: 'generate', key: item.key, body: {
         brief: item.body.brief, asset_ids: [...item.body.asset_ids], public_assets_confirmed: true,
+        // 旧请求缺省仍缺省，不能在恢复或同键重试时补造外发授权。
+        ...(item.body.image_vision_confirmed === true ? { image_vision_confirmed: true } : {}),
         expected_restaurant_revision: item.body.expected_restaurant_revision,
         ...(item.body.expected_menu_revision === undefined ? {} : Number.isSafeInteger(item.body.expected_menu_revision) && item.body.expected_menu_revision >= 0 ? { expected_menu_revision: item.body.expected_menu_revision } : {}),
       } };
     }
     if (item.kind === 'publish' && typeof item.body.version_id === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(item.body.version_id) && validRevision(item.body.expected_revision)
       && (item.body.slug === undefined || (typeof item.body.slug === 'string' && websiteSlugPattern.test(item.body.slug)))) {
+      const enhanced = ['expected_checksum', 'expected_public_content_hash', 'content_mode', 'review_confirmed'].some(field => Object.hasOwn(item.body, field));
+      if (enhanced && (!/^[a-f0-9]{64}$/.test(item.body.expected_checksum ?? '') || !/^[a-f0-9]{64}$/.test(item.body.expected_public_content_hash ?? '')
+        || !['current', 'historical'].includes(item.body.content_mode ?? '') || item.body.review_confirmed !== true)) return null;
       return { kind: 'publish', key: item.key, body: {
         version_id: item.body.version_id, expected_revision: item.body.expected_revision,
+        ...(enhanced ? { expected_checksum: item.body.expected_checksum, expected_public_content_hash: item.body.expected_public_content_hash,
+          content_mode: item.body.content_mode, review_confirmed: true as const } : {}),
         ...(item.body.slug === undefined ? {} : { slug: item.body.slug }),
       } };
     }
   } catch { /* 本地重试存储不可用时，不发起任何请求。 */ }
   return null;
 }
-function ErrorMessage({ error, readOnly = false, submissionUnknown = false, cancellation = false }: {
-  error: unknown; readOnly?: boolean; submissionUnknown?: boolean; cancellation?: boolean;
-}) {
+function ErrorMessage({ error, readOnly = false, submissionUnknown = false, cancellation = false }: { error: unknown; readOnly?: boolean; submissionUnknown?: boolean; cancellation?: boolean }) {
   if (!error) return null;
-  const readFailed = readOnly && error instanceof ApiError && (error.status === 0 || error.code === 'RESPONSE_INVALID');
-  return <div className="notice error-notice" role="alert">
-    {submissionUnknown && <p>提交结果未知，不能据此认定后台任务已失败。原输入和幂等键保留。</p>}
-    <p>{cancellation && isWebsiteWriteUncertain(error) ? '停止请求结果未知，不代表后台已停止。请手动核查网页状态；不会自动重发停止或生成请求。'
-      : readFailed ? '读取失败，保留上次读取的资料。请手动核查状态；不会因此重放写请求。' : websiteErrorMessage(error)}</p>
-  </div>;
+  const code = error instanceof ApiError ? error.code : "REQUEST_UNCONFIRMED";
+  const message = error instanceof ApiError && error.status === 401 ? "Session expired. No request will be replayed."
+    : cancellation && isWebsiteWriteUncertain(error) ? "Stop result unknown. Check status; no stop or generation request is automatically resent."
+      : readOnly ? "Read failed. The last confirmed record is retained. Check result; writes are never replayed because of a read failure."
+        : "Request did not complete. Check the fields and current result before trying again.";
+  return <div className="notice error-notice" role="alert">{submissionUnknown && <p>Submission result unknown. Original input and request key are retained.</p>}<p>{message} <code>{code}</code></p></div>;
 }
 function useWebsiteUsage(restaurantId: string, jobId: string | null, job: WebsiteJob | undefined, active: boolean) {
   const resource = `${restaurantId}:${jobId ?? ''}`;
@@ -233,26 +223,14 @@ function useWebsiteUsage(restaurantId: string, jobId: string | null, job: Websit
 
   return { data, error, opened, pending, settling, load, close };
 }
-function WebsiteUsagePanel({ usage, jobId, active, headingId }: {
-  usage: ReturnType<typeof useWebsiteUsage>; jobId: string | null; active: boolean; headingId: string;
-}) {
-  const data = usage.data;
-  const legacy = data?.legacy_summary;
+function WebsiteUsagePanel({ usage, jobId, active, headingId }: { usage: ReturnType<typeof useWebsiteUsage>; jobId: string | null; active: boolean; headingId: string }) {
+  const data = usage.data, legacy = data?.legacy_summary;
   return <section className="website-section" aria-labelledby={headingId}>
-    <div className="row-heading"><h3 id={headingId}>本次生成用量</h3><div className="button-row"><button type="button" disabled={!jobId || !active || usage.pending} aria-expanded={usage.opened} onClick={() => void usage.load()}>{usage.pending ? '正在读取用量…' : usage.error ? '重试读取用量' : '查看本次用量'}</button>{usage.opened && <button type="button" className="text-button" onClick={usage.close}>关闭用量详情</button>}</div></div>
-    <p className="micro">仅查询最近一次生成；打开详情后按调用结束刷新，原请求仍在结算时每 5 秒只读核对账单。关闭详情、切换面板或读取失败即停止核对，不重发任务、不改变业务状态。仅展示计数，不展示模型原始输入、输出或顾客信息。</p>
-    {usage.settling && <p className="micro" role="status">原请求仍在结算，自动核对账单</p>}
-    {usage.pending && <p className="micro loading-text" role="status">正在读取逐次模型用量…</p>}
-    <ErrorMessage error={usage.error} readOnly />
-    {!!usage.error && <p className="micro">用量可能已变化，保留上次成功读取的计数；请手动再次查看，不会因此重试生成。</p>}
-    {legacy ? <div className="notice" role="status">
-      <p>{legacy.total_tokens === null ? '旧任务累计未知' : `旧任务仅记录累计 ${legacy.total_tokens} tokens`}，输入/输出分项未知，不能补造。</p>
-      <p className="micro">已记录模型调用 {countLabel(legacy.model_calls)} 次，但没有逐调用账单；不能补造每次输入、输出或总用量，也不按 0 计算。接口 totals 仅汇总新逐调用账单，不代表此旧任务的累计。</p>
-    </div> : data ? <>
-      <p className="micro" aria-live="polite">已知输入 {countLabel(data.totals.prompt_tokens)} / 输出 {countLabel(data.totals.completion_tokens)} / 总计 {countLabel(data.totals.total_tokens)} tokens（不是费用）</p>
-      {data.unknown_usage_calls > 0 && <p className="notice" role="status">{countLabel(data.unknown_usage_calls)} 次调用的 token 用量未知，不按 0 计算；已知累计不是完整用量，费用仍可能增加。</p>}
-      {data.calls.length ? <div style={{ overflowX: 'auto' }}><table><caption>本次模型调用的输入、输出与总用量</caption><thead><tr><th scope="col">调用</th><th scope="col">状态</th><th scope="col">输入 tokens</th><th scope="col">输出 tokens</th><th scope="col">总计 tokens</th><th scope="col">耗时</th></tr></thead><tbody>{[...data.calls].sort((a, b) => a.index - b.index).map(call => <tr key={call.index}><th scope="row">#{call.index}</th><td>{callStatusLabels[call.status]}</td><td>{countLabel(call.prompt_tokens)}</td><td>{countLabel(call.completion_tokens)}</td><td>{countLabel(call.total_tokens)}</td><td>{elapsedLabel(call.elapsed_ms)}</td></tr>)}</tbody></table></div> : <p className="micro">服务端尚无调用记录；不代表无需费用。</p>}
-    </> : <p className="micro">{usage.opened ? '尚未成功读取本次用量，计数未知。' : jobId ? '点击按钮读取本次生成的实际用量。' : '尚无生成任务，用量未知。'}</p>}
+    <div className="row-heading"><h3 id={headingId}>Generation usage</h3><button type="button" disabled={!jobId || !active || usage.pending} aria-expanded={usage.opened} onClick={() => void usage.load()}>{usage.pending ? "Reading usage…" : "View usage"}</button>{usage.opened && <button type="button" onClick={usage.close}>Close usage</button>}</div>
+    <p className="micro">Observation mode, not a bill. Unknown usage is not zero. Opening this view only reads recorded usage, never resubmits a job. Close or leave to stop checking.</p>
+    {usage.settling && <p role="status">Original call is still settling. Checking recorded usage.</p>}<ErrorMessage error={usage.error} readOnly />
+    {legacy ? <p className="wb-notice">Legacy total: {countLabel(legacy.total_tokens)} tokens · {countLabel(legacy.model_calls)} recorded calls. Input / output and per-call details are unknown; no records are invented.</p>
+      : data ? <><p>Known input {countLabel(data.totals.prompt_tokens)} / output {countLabel(data.totals.completion_tokens)} / total {countLabel(data.totals.total_tokens)} tokens.</p>{data.unknown_usage_calls > 0 && <p className="wb-notice">{data.unknown_usage_calls} calls have unknown usage. The known total is incomplete.</p>}<div style={{ overflowX: "auto" }}><table><caption>Recorded model call usage</caption><thead><tr><th>Call</th><th>Status</th><th>Input</th><th>Output</th><th>Total</th><th>Elapsed</th></tr></thead><tbody>{[...data.calls].sort((a,b) => a.index - b.index).map(call => <tr key={call.index}><th scope="row">#{call.index}</th><td>{callStatusLabels[call.status]}</td><td>{countLabel(call.prompt_tokens)}</td><td>{countLabel(call.completion_tokens)}</td><td>{countLabel(call.total_tokens)}</td><td>{elapsedLabel(call.elapsed_ms)}</td></tr>)}</tbody></table></div></> : <p className="micro">No usage has been read yet.</p>}
   </section>;
 }
 function waitForPoll(signal: AbortSignal): Promise<void> {
@@ -264,7 +242,7 @@ function waitForPoll(signal: AbortSignal): Promise<void> {
   });
 }
 
-export default function WebsitePanel({ restaurant, active, busy, restaurantDirty, onBusyChange, onJobsChange, onDirtyChange, onRestaurantConflict }: {
+export default function WebsitePanel({ restaurant, active, busy, restaurantDirty, onBusyChange, onJobsChange, onDirtyChange, onRestaurantConflict, onContentSaved, onContentDirtyChange }: {
   restaurant: Restaurant;
   active: boolean;
   busy: boolean;
@@ -273,7 +251,22 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   onJobsChange: (busy: boolean) => void;
   onDirtyChange: (dirty: boolean) => void;
   onRestaurantConflict: () => void;
+  onContentSaved?: (content: WebsiteEditableContent) => void | Promise<void>;
+  onContentDirtyChange?: (value: boolean) => void;
 }) {
+  const [contentDirty, setContentDirty] = useState(false);
+  const [contentBusy, setContentBusy] = useState(false);
+  const [workbenchReport, setWorkbenchReport] = useState<WebsiteWorkbenchReport | null>(null);
+  const [extraVersion, setExtraVersion] = useState<WebsiteVersion | null>(null);
+  const [reviewPending, setReviewPending] = useState(false);
+  const [publishReview, setPublishReview] = useState<{ input: WebsitePublishInput; report: WebsiteWorkbenchReport; version: WebsiteContentVersion; contentReview: WebsiteContentReview | null } | null>(null);
+  const contentReviewRef = useRef<WebsiteContentReview | null>(null);
+  const [historicalConfirmed, setHistoricalConfirmed] = useState(false);
+  const [expired, setExpired] = useState(false);
+  const reviewFlightRef = useRef<AbortController | null>(null);
+  const autoPreviewRef = useRef<string | null>(null);
+  const sessionRef = useRef({ active, expired: false, selectedId: null as string | null });
+  sessionRef.current.active = active;
   const [attempt, setAttempt] = useState<WebsiteAttempt | null>(() => restoreAttempt(restaurant.id));
   const [state, setState] = useState<WebsiteState | null>(null);
   const [draft, setDraft] = useState<Draft>(() => ({
@@ -281,6 +274,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     assetIds: attempt?.kind === 'generate' ? [...attempt.body.asset_ids] : [],
     message: attempt?.kind === 'chat' ? attempt.body.message : '',
     confirmed: attempt?.kind === 'generate',
+    visionConfirmed: attempt?.kind === 'generate' && attempt.body.image_vision_confirmed === true,
   }));
   const [saved, setSaved] = useState<Saved>({ brief: '', assetIds: [] });
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -300,6 +294,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const [reload, setReload] = useState(0);
   const [assetReload, setAssetReload] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(attempt?.kind === 'publish' ? attempt.body.version_id : null);
+  sessionRef.current.selectedId = selectedId;
   const [preview, setPreview] = useState<Preview | null>(null);
   const [previewPending, setPreviewPending] = useState(false);
   const [previewError, setPreviewError] = useState<unknown>(null);
@@ -315,6 +310,9 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const acknowledgedRef = useRef(acknowledged);
   const initializedRef = useRef(false);
   const confirmedRevisionRef = useRef(restaurant.revision);
+  const visionRevisionRef = useRef(restaurant.revision);
+  const observedRestaurantRef = useRef(`${restaurant.id}:${restaurant.revision}`);
+  const assetsRef = useRef<Asset[] | null>(null);
   const serverBriefRef = useRef('');
   const observedJobsRef = useRef(new Set<string>());
   const flightRef = useRef<AbortController | null>(null);
@@ -323,6 +321,12 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const urlsRef = useRef<string[]>([]);
   const callbacksRef = useRef({ onBusyChange, onJobsChange, onDirtyChange, onRestaurantConflict });
   const mountedRef = useRef(false);
+  const reportedBusyRef = useRef(false);
+  const reportBusy = useCallback((value: boolean) => {
+    if (reportedBusyRef.current === value) return;
+    reportedBusyRef.current = value;
+    callbacksRef.current.onBusyChange(value);
+  }, []);
   draftRef.current = draft;
   savedRef.current = saved;
   attemptRef.current = attempt;
@@ -332,7 +336,20 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   const jobsActive = !!acknowledged || !!state?.jobs.some(isWebsiteJobActive);
   const dirty = !!attempt || !!draft.message || draft.brief !== saved.brief || !sameIds(draft.assetIds, saved.assetIds);
 
-  const updateDraft = useCallback((next: Draft) => { draftRef.current = next; setDraft(next); }, []);
+  const updateDraft = useCallback((next: Draft) => {
+    const current = draftRef.current;
+    const changed = next.brief !== current.brief || !sameIds(next.assetIds, current.assetIds);
+    const value = changed ? { ...next, confirmed: false, visionConfirmed: false } : next;
+    draftRef.current = value;
+    setDraft(value);
+  }, []);
+  useEffect(() => {
+    const revision = `${restaurant.id}:${restaurant.revision}`;
+    if (observedRestaurantRef.current !== revision) {
+      observedRestaurantRef.current = revision;
+      updateDraft({ ...draftRef.current, confirmed: false, visionConfirmed: false });
+    }
+  }, [restaurant.id, restaurant.revision, updateDraft]);
   const updateSaved = useCallback((next: Saved) => { savedRef.current = next; setSaved(next); }, []);
   const keepAttempt = useCallback((next: WebsiteAttempt | null) => {
     attemptRef.current = next;
@@ -341,7 +358,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       if (next) sessionStorage.setItem(storageKey(restaurant.id), JSON.stringify(next));
       else sessionStorage.removeItem(storageKey(restaurant.id));
     } catch {
-      if (next) setNote('浏览器未允许保存重试信息；本次幂等键仍保留在内存。结果未知时请勿刷新或离开。');
+      if (next) setNote('Retry storage is unavailable. The original key is retained in memory; do not reload while the result is unknown.');
     }
   }, [restaurant.id]);
   const closePreview = useCallback(() => {
@@ -363,11 +380,19 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       previewFlightRef.current = null;
       urlsRef.current.forEach(url => URL.revokeObjectURL(url));
       urlsRef.current = [];
-      callbacksRef.current.onBusyChange(false);
+      reportBusy(false);
       callbacksRef.current.onJobsChange(false);
     };
   }, []);
-  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onDirtyChange(dirty || contentDirty); }, [dirty, contentDirty, onDirtyChange]);
+  useEffect(() => { onContentDirtyChange?.(contentDirty); }, [contentDirty, onContentDirtyChange]);
+  useEffect(() => { reportBusy(pending !== null || contentBusy || reviewPending); }, [pending, contentBusy, reviewPending, reportBusy]);
+  useEffect(() => onSessionExpired(() => {
+    sessionRef.current.expired = true; contentReviewRef.current = null;
+    flightRef.current?.abort(); pollFlightRef.current?.abort(); reviewFlightRef.current?.abort();
+    closePreview(); keepAttempt(null); setState(null); setWorkbenchReport(null); setExtraVersion(null); setPublishReview(null); setExpired(true);
+    updateDraft({ brief: '', assetIds: [], message: '', confirmed: false, visionConfirmed: false });
+  }), [closePreview, keepAttempt, updateDraft]);
   useEffect(() => { onJobsChange(jobsActive); }, [jobsActive, onJobsChange]);
   useEffect(() => {
     if (active) return;
@@ -377,7 +402,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       flightRef.current.abort();
       flightRef.current = null;
       setPending(null);
-      callbacksRef.current.onBusyChange(false);
+      reportBusy(false);
     }
   }, [active, closePreview]);
 
@@ -397,12 +422,13 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     const ack = acknowledgedRef.current;
     const completed = next.jobs.filter(job => observedJobsRef.current.has(job.id) && job.status === 'succeeded' && job.result_version_id)
       .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+    if (first) setSelectedId(currentId => currentId ?? next.publication.published_version_id ?? next.versions[0]?.id ?? null);
     if (selectGeneratedVersion && completed?.result_version_id) {
       setSelectedId(completed.result_version_id);
       setPublicationConfirmed(false);
       setPublishTarget(null);
-      setNote('新网页版本已生成。请点击“预览此版本”，检查后再单独确认本地发布。');
-    } else if (selectGeneratedVersion && first) setSelectedId(current => current ?? [...next.versions].sort((a, b) => b.version_number - a.version_number)[0]?.id ?? null);
+      setNote('New design saved. Opening its real preview; publication requires your confirmation.');
+    }
     next.jobs.forEach(job => {
       if (isWebsiteJobActive(job)) observedJobsRef.current.add(job.id);
       else observedJobsRef.current.delete(job.id);
@@ -426,7 +452,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   }, [updateDraft, updateSaved]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || expired) return;
     const controller = new AbortController();
     pollFlightRef.current = controller;
     setChecking(true);
@@ -453,10 +479,10 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       controller.abort();
       if (pollFlightRef.current === controller) pollFlightRef.current = null;
     };
-  }, [active, restaurant.id, reload, applyState]);
+  }, [active, expired, restaurant.id, reload, applyState]);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active || expired) return;
     const controller = new AbortController();
     setAssetsLoading(true);
     setAssetsError(null);
@@ -480,46 +506,60 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
           cursors.add(page.next_cursor);
           cursor = page.next_cursor;
         } while (true);
-        setAssets(items.slice(0, 100).filter(item => item.origin === 'upload' && item.status === 'ready' && item.safety_status === 'approved'));
+        const available = items.slice(0, 100).filter(item => item.origin === 'upload' && item.status === 'ready' && item.safety_status === 'approved');
+        const selectedChanged = draftRef.current.assetIds.some(id => {
+          const next = available.find(asset => asset.id === id);
+          const previous = assetsRef.current?.find(asset => asset.id === id);
+          return !next || (!!assetsRef.current && (!previous || previous.revision !== next.revision
+            || previous.checksum !== next.checksum || previous.kind !== next.kind || previous.mime_type !== next.mime_type
+            || previous.rights_confirmed_at !== next.rights_confirmed_at));
+        });
+        if (selectedChanged) updateDraft({ ...draftRef.current, confirmed: false, visionConfirmed: false });
+        assetsRef.current = available;
+        setAssets(available);
         setAssetsTruncated(more);
       } catch (caught) { if (!controller.signal.aborted) setAssetsError(caught); }
       finally { if (!controller.signal.aborted) setAssetsLoading(false); }
     }
     void loadAssets();
     return () => controller.abort();
-  }, [active, restaurant.id, assetReload]);
+  }, [active, expired, restaurant.id, assetReload, updateDraft]);
 
-  const selected = state?.versions.find(version => version.id === selectedId) ?? null;
-  const publishedNumber = state?.versions.find(version => version.id === state.publication.published_version_id)?.version_number;
-  const rollback = !!selected && !!state?.publication.published_version_id && (publishedNumber === undefined
-    ? selected.version_number < Math.max(...state.versions.map(version => version.version_number))
-    : selected.version_number < publishedNumber);
-  const inputLocked = busy || pending !== null || !!attempt || loading || checking || !active;
-  const paidLocked = inputLocked || jobsActive || cancelNeedsCheck || checking || loading || !!loadError || !state?.model_configured || restaurantDirty
+  const selected = extraVersion?.id === selectedId ? extraVersion : state?.versions.find(version => version.id === selectedId) ?? null;
+  const publishedNumber = workbenchReport?.published_version?.id === state?.publication.published_version_id
+    ? workbenchReport?.published_version?.version_number : state?.versions.find(version => version.id === state.publication.published_version_id)?.version_number;
+  const inputLocked = busy || contentBusy || reviewPending || pending !== null || !!attempt || loading || checking || !active || expired;
+  const modelLocked = inputLocked || jobsActive || cancelNeedsCheck || checking || loading || !!loadError || !state?.model_configured || restaurantDirty || contentDirty
     || !['draft', 'active'].includes(restaurant.status);
-  const missingSelected = draft.assetIds.some(id => !assets.some(asset => asset.id === id));
+  const selectedAssets = draft.assetIds.map(id => assets.find(asset => asset.id === id));
+  const missingSelected = selectedAssets.some(asset => !asset);
+  const needsVision = selectedAssets.some(asset => !!asset && ['logo', 'restaurant_photo', 'dish_photo'].includes(asset.kind)
+    && ['image/jpeg', 'image/png'].includes(asset.mime_type));
+  const visionConfirmed = draft.visionConfirmed && visionRevisionRef.current === restaurant.revision;
   const factsConfirmed = draft.confirmed && confirmedRevisionRef.current === restaurant.revision;
   const menuNeedsConfirm = !!state && state.menu.item_count > 0 && state.menu.status !== 'confirmed';
   const generationBlockers = ([
-    [!active, '当前建站面板未激活。'],
-    [busy, '工作区正在处理其他操作，请等待结束。'],
-    [pending !== null, '当前请求正在提交或核查，请等待结束。'],
-    [!!attempt, '旧请求结果待确认，请先核查原请求，不能直接发起新生成。'],
-    [loading, '正在首次读取网页状态。'],
-    [checking, '正在核查网页任务与版本。'],
-    [!!loadError, '网页状态读取失败，请先手动核查成功。'],
-    [cancelNeedsCheck, '停止请求结果待核查，请先手动读取网页状态，不要重复生成。'],
-    [!state, '尚未读到可确认的后端网页状态。'],
-    [!!state && !state.model_configured, '网页模型未配置，不能生成；不会使用模拟结果。'],
-    [jobsActive, '已有后台建站或对话任务，请等待完成。'],
-    [restaurantDirty, '餐厅资料或菜单未保存，或版本待核对；请先保存并确认。'],
-    [!['draft', 'active'].includes(restaurant.status), '当前餐厅状态不允许生成，请核对餐厅状态。'],
-    [menuNeedsConfirm, '结构化菜单尚未确认，请到菜单识图中人工确认。'],
-    [!draft.brief.trim(), '官网需求摘要为空，请填写摘要。'],
-    [!factsConfirmed, '尚未确认当前版本的餐厅事实与素材公开权限，请勾选确认。'],
-    [assetsLoading, '正在读取可选素材，请等待结束。'],
-    [!!assetsError, '素材读取失败，请刷新可选素材。'],
-    [missingSelected, '所选素材不在最新可用列表中，请移除不可用选择并重新确认。'],
+    [!active, 'This panel is not active.'],
+    [busy, 'Another workspace operation is pending.'],
+    [pending !== null, 'A request is pending.'],
+    [!!attempt, 'Check the unresolved original request first.'],
+    [loading, 'Reading website state.'],
+    [checking, 'Checking jobs and versions.'],
+    [!!loadError, 'Website read failed. Check status first.'],
+    [cancelNeedsCheck, 'Stop result needs a status check.'],
+    [!state, 'No validated website state yet.'],
+    [!!state && !state.model_configured, 'AI is not configured. No simulated generation is available.'],
+    [jobsActive, 'A background job is active.'],
+    [restaurantDirty || contentDirty, 'Finish or discard unsaved restaurant content first.'],
+    [contentBusy || reviewPending || expired, 'Another request is pending or the session expired.'],
+    [!['draft', 'active'].includes(restaurant.status), 'This restaurant cannot generate a design.'],
+    [menuNeedsConfirm, 'Confirm the saved menu first.'],
+    [!draft.brief.trim(), 'Enter a design brief.'],
+    [!factsConfirmed, 'Confirm saved facts and permission to publish selected assets.'],
+    [needsVision && !visionConfirmed, 'Separately authorize sending selected photo / logo thumbnails to DeepSeek.'],
+    [assetsLoading, 'Reading available assets.'],
+    [!!assetsError, 'Asset read failed. Refresh assets.'],
+    [missingSelected, 'Remove unavailable selected assets and confirm again.'],
   ] satisfies Array<[boolean, string]>).filter(([blocked]) => blocked).map(([, reason]) => reason);
   // 「结果未知」保护态不能把放弃入口一起锁死，否则用户既不能改、也不能取消。
   // 放弃只清除浏览器本地草稿与未确认请求的幂等键，不向服务端发送任何写请求。
@@ -528,14 +568,14 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     if (discardDisabled) return;
     const hadUncertainRequest = !!attemptRef.current;
     keepAttempt(null);
-    updateDraft({ ...draftRef.current, brief: savedRef.current.brief, assetIds: [...savedRef.current.assetIds], message: '', confirmed: false });
+    updateDraft({ ...draftRef.current, brief: savedRef.current.brief, assetIds: [...savedRef.current.assetIds], message: '', confirmed: false, visionConfirmed: false });
     setError(null);
     setCancelError(null);
     setPublicationConfirmed(false);
     setPublishTarget(null);
     setNote(hadUncertainRequest
-      ? '已放弃未提交的修改，并清除本机保存的未确认请求；不会重放、不会重新发起生成或发布。若服务端曾受理，任务仍保留在任务记录中，可手动核查。'
-      : '已放弃未提交的修改，恢复为上次保存的内容。');
+      ? 'Local changes and the unresolved request were discarded. No write was sent. A job already accepted by the server may still exist; check status.'
+      : 'Unsaved design changes discarded.');
   };
 
   async function execute(request: WebsiteAttempt, signal: AbortSignal) {
@@ -549,19 +589,19 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
         setPublicationConfirmed(false);
         setPublishTarget(null);
         setChecking(true);
-        setNote('原操作已处理，发布回执不代表当前版本；正在重新读取当前发布状态。');
+        setNote('Publication acknowledged. Reading current publication; the original receipt does not represent its current pointer.');
         try {
           const next = await websiteApi.get(restaurant.id, signal);
           if (signal.aborted) return;
           applyState(next, false);
-          setNote('原操作已处理，已重新读取当前发布状态；不会自动把发布指针切回原操作的版本。');
+          setNote('Publication acknowledged. Current state reloaded; no publication pointer was restored automatically.');
           if (next.jobs.some(isWebsiteJobActive)) setReload(value => value + 1);
         } catch (caught) {
           if (signal.aborted) return;
           // 原动作已知完成，GET 失败不能转成写入未知或再发一次发布。
           setLoadError(caught);
           setChecking(false);
-          setNote('原操作已处理，未再次提交发布。当前版本仅以重新读取的服务端状态为准。');
+          setNote('Publication acknowledged, current state read failed. Check status; no publication will be resubmitted.');
         }
         return;
       } else {
@@ -576,7 +616,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
         keepAttempt(null);
         if (request.kind === 'chat') updateDraft({ ...draftRef.current, message: '' });
         else updateSaved({ brief: request.body.brief, assetIds: [...request.body.asset_ids] });
-        setNote('服务端已受理后台任务，尚不代表生成成功。每 2 秒只读核查任务；核查失败即暂停，等待手动核查，不会重复付费提交。');
+        setNote('Background job accepted. Checking recorded progress every 2 seconds; a read failure pauses checks, never resubmits the job.');
       }
       setReload(value => value + 1);
     } catch (caught) {
@@ -593,7 +633,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     }
   }
   async function run(request: WebsiteAttempt, retry = false) {
-    if (!active || busy || flightRef.current) return;
+    if (!active || sessionRef.current.expired || busy || contentBusy || reviewPending || flightRef.current) return;
     const controller = new AbortController();
     flightRef.current = controller;
     if (request.kind === 'publish') {
@@ -607,7 +647,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     setCancelError(null);
     setNote('');
     keepAttempt(request);
-    callbacksRef.current.onBusyChange(true);
+    reportBusy(true);
     try {
       if (retry) {
         // 核查只读状态后，同内容同键查询原写入结果；绝不换键或自动重放。
@@ -624,7 +664,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     } finally {
       if (flightRef.current === controller) {
         flightRef.current = null;
-        callbacksRef.current.onBusyChange(false);
+        reportBusy(false);
         if (mountedRef.current) setPending(null);
       }
     }
@@ -643,17 +683,17 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     setChecking(true);
     setError(null);
     setCancelError(null);
-    setNote('正在提交你二次确认的停止请求；尚不能认定后台已停止。');
+    setNote('Submitting the confirmed stop request. The job is not yet confirmed stopped.');
     setPublicationConfirmed(false);
     setPublishTarget(null);
-    callbacksRef.current.onBusyChange(true);
+    reportBusy(true);
     let confirmed = false;
     try {
       await websiteApi.cancel(restaurant.id, jobId, { confirmed: true }, controller.signal);
       if (controller.signal.aborted) return;
       confirmed = true;
       setCancelTargetId(null);
-      setNote('服务端已确认停止本次生成，不会自动发布或重新生成；已发生的费用仍须核对。正在读取最新任务状态。');
+      setNote('Stop acknowledged. Reading current state; recorded model usage is retained. No automatic publication or restart.');
       const next = await websiteApi.get(restaurant.id, controller.signal);
       if (controller.signal.aborted) return;
       applyState(next, false);
@@ -664,46 +704,73 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       setCancelTargetId(null);
       if (confirmed) {
         setLoadError(caught);
-        setNote('服务端已确认停止，但最新任务状态读取失败。请手动核查；不会再次发送停止或生成请求。');
+        setNote('Stop acknowledged, current state read failed. Check status; no stop or generation request will be resent.');
       } else {
         setCancelError(caught);
         if (isWebsiteWriteUncertain(caught)) {
-          setNote('停止请求结果未知，不代表后台已停止。请手动核查网页状态；不会自动重发停止请求或重新生成。');
+          setNote('Stop result unknown. Check status; the job may still run. No stop or generation request is resent automatically.');
         } else {
           setCancelNeedsCheck(false);
-          setNote('停止请求未获确认，请核查任务状态后再决定；不会自动重复提交。');
+          setNote('Stop was not acknowledged. Check current state before deciding; no automatic retry.');
           if (!(caught instanceof ApiError && caught.status === 401)) setReload(value => value + 1);
         }
       }
     } finally {
       if (flightRef.current === controller) {
         flightRef.current = null;
-        callbacksRef.current.onBusyChange(false);
+        reportBusy(false);
         if (mountedRef.current) setPending(null);
       }
     }
   }
   function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (paidLocked || !state || !draft.message.trim()) return;
+    if (modelLocked || !state || !draft.message.trim()) return;
     void run({ kind: 'chat', key: crypto.randomUUID(), body: { message: draft.message, expected_revision: state.agent.revision } });
   }
   function generate() {
     if (generationBlockers.length > 0) return;
     void run({ kind: 'generate', key: crypto.randomUUID(), body: {
-      brief: draft.brief, asset_ids: [...draft.assetIds], public_assets_confirmed: true, expected_restaurant_revision: restaurant.revision, expected_menu_revision: state?.menu.revision ?? 0,
+      brief: draft.brief, asset_ids: [...draft.assetIds], public_assets_confirmed: true,
+      ...(needsVision ? { image_vision_confirmed: true } : {}),
+      expected_restaurant_revision: restaurant.revision, expected_menu_revision: state?.menu.revision ?? 0,
     } });
   }
+  async function reviewPublication() {
+    if (!selected || !preview || preview.versionId !== selected.id || preview.checksum !== selected.checksum || inputLocked || jobsActive || restaurantDirty || contentDirty || !active || reviewFlightRef.current) return;
+    const candidateId = selected.id;
+    const controller = new AbortController(); reviewFlightRef.current = controller; setReviewPending(true); setError(null);
+    try {
+      const report = await websiteContentClient.workbench(restaurant.id, candidateId, controller.signal);
+      if (controller.signal.aborted || sessionRef.current.expired || !sessionRef.current.active || sessionRef.current.selectedId !== candidateId) return;
+      const version = report.editing_version;
+      if (!version || version.id !== candidateId || version.checksum !== preview.checksum) throw new ApiError(409, 'WEBSITE_CONTENT_REVIEW_REQUIRED');
+      if (version.origin !== 'legacy' && !version.public_content_hash) throw new ApiError(409, 'WEBSITE_CONTENT_REVIEW_REQUIRED');
+      const current = version.public_content_hash === report.current_public_content_hash;
+      const input: WebsitePublishInput = { version_id: candidateId, expected_revision: report.publication.revision,
+        ...(version.public_content_hash ? { expected_checksum: version.checksum, expected_public_content_hash: version.public_content_hash,
+          content_mode: current ? 'current' as const : 'historical' as const, review_confirmed: true as const } : {}),
+        ...(!report.publication.slug ? { slug } : {}) };
+      setWorkbenchReport(report);
+      const savedReview = contentReviewRef.current;
+      const contentReview = savedReview && savedReview.restaurant_id === restaurant.id && savedReview.version_id === candidateId
+        && savedReview.checksum === version.checksum && savedReview.public_content_hash === version.public_content_hash
+        && report.publication.published_version_id !== candidateId ? structuredClone(savedReview) : savedContentReview(report);
+      setPublishReview({ input, report, version, contentReview }); setPublishTarget(version); setPublicationConfirmed(true); setHistoricalConfirmed(false);
+    } catch (caught) { if (!controller.signal.aborted) setError(caught); }
+    finally { if (reviewFlightRef.current === controller) { reviewFlightRef.current = null; if (!controller.signal.aborted) setReviewPending(false); } }
+  }
+  const publishStale = !!publishReview && !!workbenchReport && (workbenchReport.publication.revision !== publishReview.input.expected_revision
+    || workbenchReport.current_public_content_hash !== publishReview.report.current_public_content_hash);
   function publish() {
-    if (!publishTarget || !state || inputLocked || jobsActive || !publicationConfirmed || state.publication.deployment_mode !== 'local'
-      || publicationNeedsCheck || checking || loadError || restaurantDirty || !['draft', 'active'].includes(restaurant.status)) return;
-    if (!state.publication.slug && !websiteSlugPattern.test(slug)) return;
-    void run({ kind: 'publish', key: crypto.randomUUID(), body: {
-      version_id: publishTarget.id, ...(!state.publication.slug ? { slug } : {}), expected_revision: state.publication.revision,
-    } });
+    if (publishStale || !publishReview || !publishTarget || selectedId !== publishTarget.id || preview?.versionId !== publishTarget.id || !state || inputLocked || jobsActive || !publicationConfirmed || publishReview.report.publication.deployment_mode !== 'local'
+      || publicationNeedsCheck || checking || loadError || restaurantDirty || contentDirty || !['draft', 'active'].includes(restaurant.status)
+      || ((publishReview.input.content_mode === 'historical' || publishReview.version.origin === 'legacy') && !historicalConfirmed)) return;
+    if (publishReview.input.slug !== undefined && !websiteSlugPattern.test(publishReview.input.slug)) return;
+    void run({ kind: 'publish', key: crypto.randomUUID(), body: structuredClone(publishReview.input) });
   }
   async function openPreview(version: WebsiteVersion) {
-    if (!active || previewFlightRef.current) return;
+    if (!active || sessionRef.current.expired || previewFlightRef.current) return;
     closePreview();
     const controller = new AbortController();
     previewFlightRef.current = controller;
@@ -727,7 +794,7 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       const images: Array<{ id: string; length: number }> = [];
       for (const asset of previewDoc.assets) {
         if (asset.mime_type === 'application/pdf') {
-          inlineUrls.set(asset.id, textDataUrl('菜单 PDF 请在预览区下方下载原文件。'));
+          inlineUrls.set(asset.id, textDataUrl('Download the original menu PDF below the preview.'));
           continue;
         }
         const url = await previewImageUrl(blobs.get(asset.id)!);
@@ -744,12 +811,12 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
       if (controller.signal.aborted) return;
       urlsRef.current = created;
       setPreview({
-        versionId: version.id, checksum: previewDoc.checksum, documentUrl, fullUrl, reducedImages,
+        versionId: version.id, versionNumber: version.version_number, checksum: previewDoc.checksum, documentUrl, fullUrl, reducedImages,
         pdfs: previewDoc.assets.filter(asset => asset.mime_type === 'application/pdf')
           .map(asset => ({ id: asset.id, url: downloadUrls.get(asset.id)! })),
         originals: previewDoc.assets.filter(asset => asset.mime_type !== 'application/pdf')
           .map((asset, index) => ({ id: asset.id, url: downloadUrls.get(asset.id)!,
-            label: `图片${index + 1}.${asset.mime_type === 'image/png' ? 'png' : 'jpg'}` })),
+            label: `image-${index + 1}.${asset.mime_type === 'image/png' ? 'png' : 'jpg'}` })),
       });
     } catch (caught) {
       if (mountedRef.current && !controller.signal.aborted) setPreviewError(caught);
@@ -760,7 +827,6 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
   }
   const publicUrl = state ? safeLocalPublicationUrl(state.publication.url, state.publication.slug) : null;
   const prefix = `website-${restaurant.id}`;
-  const versions = [...(state?.versions ?? [])].sort((left, right) => right.version_number - left.version_number).slice(0, 20);
   const activeJobs = state?.jobs.filter(isWebsiteJobActive) ?? [];
   const generationJobs = [...(state?.jobs ?? [])].filter(job => job.kind === 'generate')
     .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at));
@@ -773,42 +839,104 @@ export default function WebsitePanel({ restaurant, active, busy, restaurantDirty
     setCancelTargetId(null);
   }, [restaurant.id, usageJobId, canStopGeneration]);
 
-  return <section className="website-panel" aria-labelledby={`${prefix}-title`}>
-    <header className="assets-heading"><div><p className="eyebrow">网页 Agent</p><h3 id={`${prefix}-title`}>确认真实资料，再生成餐厅网页</h3><p className="micro">先讨论风格、布局与缺失信息，再生成版本。仅服务端调用模型，前端不传模型密钥。每账号每日合计最多 30 个建站任务 / 对话 / 识图，不是模型调用次数。</p></div><button type="button" className="text-button" disabled={pending !== null || !active} onClick={() => setReload(value => value + 1)}>核查网页状态</button></header>
-    <div className="notice"><p>本地发布仅供本机测试，未绑定公网域名；云端托管未验收。</p><p className="micro">菜单图片可在“菜单识图”中直接交给视觉大模型识别，无独立 OCR。只有人工确认的菜单文字会进入新网页；所选原文件仍可独立展示。在线订位由下方平台固定组件控制，不是模型生成的表单。</p></div><ReservationSettingsPanel restaurantId={restaurant.id} active={active} />
-    <section className="website-capabilities" aria-labelledby={`${prefix}-capabilities`}><h3 id={`${prefix}-capabilities`}>Agent真实能力说明</h3><ul><li>读取已保存的餐厅资料，讨论风格与布局。</li><li>使用当前餐厅已上传且可用、经确认允许公开的素材。</li><li>将人工确认的菜单冻结进新网页版本。</li><li>生成版本，读取服务端计划、真实检查与修复结果；预览、发布须分别确认。</li></ul><p>顾客预订、订阅和统计尚未实现，不会添加伪功能按钮。</p><p>当前调试模式不限制累计tokens/调用或修复轮次，每次模型请求仍有网络超时；费用持续累计，发布须人工确认</p></section>
-    {state && <p className="notice" role="status">{menuNeedsConfirm ? '菜单尚未确认，请到“菜单识图”核对并确认后再生成网页。' : state.menu.status === 'confirmed' ? `已确认菜单：${state.menu.item_count} 个菜品 · 菜单版本 ${state.menu.revision}；会冻结进下一次网页生成，不自动更新旧网页。` : '暂无已确认的结构化菜单；可以仅展示菜单原文件或生成纯文字页面。'}</p>}
-    {restaurantDirty && <p className="notice" role="status">餐厅资料、营业时间或菜单还有未保存内容，或版本需要重新核对。请先保存、确认并刷新，再生成网页或发布。</p>}
-    <section className="website-section" aria-labelledby={`${prefix}-facts`}><div className="row-heading"><h3 id={`${prefix}-facts`}>已保存资料 · 只读确认</h3><span className="micro">餐厅版本 {restaurant.revision}</span></div><dl className="website-facts">{profileFields.map(field => <div key={field.key} className={field.key === 'description' ? 'wide' : ''}><dt>{field.label}</dt><dd>{restaurant[field.key] || '尚未填写'}</dd></div>)}</dl><p className="micro">Agent 不修改餐厅事实；请在“餐厅资料”中补充并保存。{restaurant.readiness.missing_fields.length ? `仍有 ${restaurant.readiness.missing_fields.length} 项待补充，请核对资料检查。` : '资料检查无缺项也不代表预订功能已开通。'}</p></section>
-    {loading && <div className="workspace-loading" aria-busy="true" role="status"><p className="micro">正在读取网页 Agent、版本和任务…</p><div className="skeleton-line" /><div className="skeleton-line short" /></div>}
-    <ErrorMessage error={loadError} readOnly />
-    {state && !state.model_configured && <p className="notice" role="status">网页 Agent 未配置，付费按钮已停用。已有版本仍可预览；不会使用模拟生成。</p>}
-    <div aria-live="polite" aria-atomic="true">{pending && <p className="micro loading-text" role="status">{pending === 'retry' ? '正在核查并重试同一请求…' : pending === 'cancel' ? '正在提交停止请求并核查状态…' : '正在提交请求（单次 API 最长等待 20 秒）…'}</p>}{note && <p className="notice" role="status">{note}</p>}</div>
-    <ErrorMessage error={error} submissionUnknown={!!attempt && isWebsiteWriteUncertain(error)} />
-    <ErrorMessage error={cancelError} cancellation />
-    {attempt && !pending && <section className="notice" aria-labelledby={`${prefix}-uncertain`}><h3 id={`${prefix}-uncertain`}>本次{attempt.kind === 'chat' ? '需求发送' : attempt.kind === 'generate' ? '网页生成' : '本地发布'}结果尚未确认</h3><p>原输入和幂等键保持不变，编辑与新付费操作已暂停。核查后只重试同一请求，不会静默换键；本窗口刷新后也会尝试恢复重试信息。若不想重放，可放弃修改并清除未确认请求：只删本机草稿与原幂等键，不发送写请求、不产生模型费用；服务端若曾受理，任务仍在任务记录中可查看。</p>{attempt.kind === 'publish' && <p className="micro">待核查的版本：{state?.versions.find(version => version.id === attempt.body.version_id)?.version_number ?? '请核对版本记录'}。本次请求不会随预览选择改变。</p>}<button type="button" disabled={busy || !active} onClick={() => void run(attempt, true)}>核查并重试</button><button type="button" className="text-button" disabled={discardDisabled} onClick={discardDraft}>放弃修改并清除未确认请求</button></section>}
-    {jobsActive && <section className="notice" aria-live="polite"><h3>后台任务正在进行</h3><p>付费操作与餐厅切换已暂停。可以预览已有版本；这里不会因等待超过 60 秒就声称任务失败。</p>{acknowledged && !state?.jobs.some(job => job.id === acknowledged.job_id) && <p className="micro">{acknowledged.kind === 'chat' ? '需求讨论' : '网页生成'} · 已受理，正在核对持久任务记录。</p>}{activeJobs.map(job => <p key={job.id} className="micro">{job.kind === 'chat' ? '需求讨论' : '网页生成'} · {jobLabels[job.status]} · {formatTime(job.created_at)}</p>)}<p className="micro">页面可恢复服务端任务。网络核查失败时不会重复提交模型调用。</p></section>}
-    <AgentProgress job={progressJob} waiting={!!generationWaiting} stale={!!loadError || cancelNeedsCheck} headingId={`${prefix}-agent-progress`} />
-    {canStopGeneration && progressJob && <section className="notice" aria-labelledby={`${prefix}-cancel-title`}>
-      <h3 id={`${prefix}-cancel-title`}>手动停止本次生成</h3>
-      <p className="micro">仅针对当前餐厅最近一次仍排队或运行的生成任务；不会自动停止循环，已发生的费用不撤销。</p>
-      {cancelTargetId === progressJob.id ? <><p>确认停止本次生成？停止后不自动发布、不自动重新生成；已发生的模型费用仍会累计。</p><div className="button-row"><button type="button" disabled={!active || busy || pending !== null || cancelNeedsCheck} onClick={() => void stopGeneration(progressJob.id)}>确认停止本次生成</button><button type="button" className="text-button" disabled={pending === 'cancel'} onClick={() => setCancelTargetId(null)}>继续生成，返回</button></div></>
-        : <button type="button" disabled={!active || busy || pending !== null || cancelNeedsCheck} onClick={() => setCancelTargetId(progressJob.id)}>停止本次生成</button>}
-      {cancelNeedsCheck && <p className="micro" role="status">停止请求状态仍待核对，请手动核查网页状态，不据此认定后台已停止。</p>}
+  useEffect(() => {
+    if (!active || expired || !selectedId || preview?.versionId === selectedId || previewPending || autoPreviewRef.current === selectedId) return;
+    autoPreviewRef.current = selectedId;
+    const controller = new AbortController();
+    const known = extraVersion?.id === selectedId ? extraVersion : state?.versions.find(version => version.id === selectedId);
+    void (async () => {
+      try {
+        const version = known ?? await websiteContentClient.version(restaurant.id, selectedId, controller.signal);
+        if (!controller.signal.aborted && sessionRef.current.active && !sessionRef.current.expired && sessionRef.current.selectedId === version.id) {
+          if (!known) setExtraVersion(version);
+          await openPreview(version);
+        }
+      } catch (caught) { if (!controller.signal.aborted) setPreviewError(caught); }
+    })();
+    return () => controller.abort();
+  }, [active, expired, selectedId, preview?.versionId, previewPending, restaurant.id]);
+  useEffect(() => { setPublishReview(null); setPublishTarget(null); setPublicationConfirmed(false); }, [selectedId, restaurant.revision, contentDirty]);
+  useEffect(() => {
+    if (!active) { reviewFlightRef.current?.abort(); reviewFlightRef.current = null; setReviewPending(false); setPublishReview(null); autoPreviewRef.current = null; }
+    return () => { reviewFlightRef.current?.abort(); };
+  }, [active]);
+  const selectVersion = useCallback((version: WebsiteContentVersion) => {
+    if (contentReviewRef.current?.version_id !== version.id) contentReviewRef.current = null;
+    setExtraVersion(version); setSelectedId(version.id); setPublicationConfirmed(false); setPublishTarget(null); setPublishReview(null);
+    autoPreviewRef.current = null;
+  }, []);
+  const reportChanged = useCallback((report: WebsiteWorkbenchReport | null) => {
+    if (!report || report.publication.published_version_id === contentReviewRef.current?.version_id) contentReviewRef.current = null;
+    setWorkbenchReport(report);
+  }, []);
+  const contentReviewChanged = useCallback((review: WebsiteContentReview | null) => {
+    if (sessionRef.current.expired) return;
+    contentReviewRef.current = review?.restaurant_id === restaurant.id ? structuredClone(review) : null;
+    setPublishReview(null); setPublishTarget(null); setPublicationConfirmed(false); setHistoricalConfirmed(false);
+  }, [restaurant.id]);
+  useEffect(() => {
+    const review = contentReviewRef.current;
+    if (review && (review.restaurant_id !== restaurant.id || review.version_id !== selectedId || review.version_id === state?.publication.published_version_id)) contentReviewRef.current = null;
+  }, [restaurant.id, selectedId, state?.publication.published_version_id]);
+  const contentChanged = useCallback((value: boolean) => { setContentDirty(value); }, []);
+  const contentRequestChanged = useCallback((value: boolean) => { setContentBusy(value); }, []);
+  const status = <>
+    <ErrorMessage error={loadError} readOnly /><ErrorMessage error={error} submissionUnknown={!!attempt && isWebsiteWriteUncertain(error)} /><ErrorMessage error={cancelError} cancellation />
+    {pending && <p role="status" className="wb-small">{pending === "retry" ? "Checking the original request…" : pending === "cancel" ? "Stopping and checking…" : "Submitting request…"}</p>}
+    {note && <p className="wb-notice" role="status">{note}</p>}
+    {attempt && !pending && <section className="wb-notice" aria-labelledby={`${prefix}-uncertain`}><h3 id={`${prefix}-uncertain`}>Request result unknown</h3><p>Original input and request key are retained. Check result before retrying the same request; never start a replacement request automatically.</p>
+      {attempt.kind === "generate" && <p className="wb-small">{attempt.body.image_vision_confirmed === true ? "The original request includes separate image consent. Retry preserves it." : "The original request has no image consent. Retry will not add permission."}</p>}
+      {attempt.kind === "publish" && <p className="wb-small">Fixed publication target: {attempt.body.version_id}. Preview selection cannot change this request.</p>}
+      <button type="button" disabled={busy || contentBusy || !active} onClick={() => void run(attempt, true)}>Check result / Retry same request</button><button type="button" disabled={discardDisabled} onClick={discardDraft}>Discard local request</button>
     </section>}
-    <WebsiteUsagePanel usage={usage} jobId={usageJobId} active={active} headingId={`${prefix}-usage-title`} />
-    <section className="website-section" aria-labelledby={`${prefix}-chat-title`}><h3 id={`${prefix}-chat-title`}>01 / 与 Agent 确认需求</h3><p className="micro">说明喜欢的风格、页面布局和展示重点。Agent 根据已保存事实追问缺失信息；图片、菜单不会在需求讨论中发送识别。</p><ol className="website-messages" aria-label="网页需求对话">{state?.agent.messages.map((message, index) => <li key={index} className={`website-message ${message.role}`}><span className="micro">{message.role === 'user' ? '你' : '网页 Agent'}</span><p>{message.content}</p></li>)}</ol>{state?.agent.messages.length === 0 && <p className="micro website-empty">尚无对话。可以告诉 Agent 你想要的风格，或直接填写下面的官网需求。</p>}<form onSubmit={sendMessage}><div className="field"><label htmlFor={`${prefix}-message`}>风格与布局需求</label><textarea id={`${prefix}-message`} rows={3} maxLength={2000} value={draft.message} disabled={inputLocked} onChange={event => updateDraft({ ...draft, message: event.target.value })} placeholder="例如：白底、绿色细线；先介绍餐厅，再展示菜品与联系方式。不要编造菜单价格或预订功能。" /><span className="micro">{draft.message.length} / 2000 · 未发送内容仅保留在当前页面</span></div><button type="submit" disabled={paidLocked || !draft.message.trim()}>发送需求给 Agent</button></form></section>
-    <section className="website-section" aria-labelledby={`${prefix}-generate-title`}><h3 id={`${prefix}-generate-title`}>02 / 官网需求与公开素材</h3><div className="field"><label htmlFor={`${prefix}-brief`}>官网需求摘要（可编辑）</label><textarea id={`${prefix}-brief`} rows={6} maxLength={3000} value={draft.brief} disabled={inputLocked} onChange={event => updateDraft({ ...draft, brief: event.target.value, confirmed: false })} /><p className="micro">{draft.brief.length} / 3000 · 摘要可描述展示方式，不应替代真实餐厅资料。点击生成后提交此摘要及选择。</p></div><div className="row-heading"><h3>选择已上传素材</h3><button type="button" className="text-button" disabled={inputLocked || assetsLoading} onClick={() => setAssetReload(value => value + 1)}>刷新可选素材</button></div><p className="micro">最多读取 100 份素材，最多选择 8 份；菜单原文件和 Logo 各最多 1 份。只使用当前餐厅已上传且可用的文件，没有示例图片。</p>{assetsLoading && <p className="micro loading-text" role="status">正在分页读取全部可选素材…</p>}<ErrorMessage error={assetsError} readOnly />{!assetsLoading && !assetsError && assets.length === 0 && <p className="micro website-empty">暂无可选素材。可先到“菜单与图片”上传；也可以不选素材生成纯文字网页。</p>}<ul className="website-asset-options">{assets.map(asset => <li key={asset.id}><label className="check-field"><input type="checkbox" checked={draft.assetIds.includes(asset.id)} disabled={inputLocked || assetsLoading || (!draft.assetIds.includes(asset.id) && (draft.assetIds.length >= 8 || (['menu_source', 'logo'].includes(asset.kind) && assets.some(chosen => chosen.kind === asset.kind && draft.assetIds.includes(chosen.id)))))} onChange={event => updateDraft({ ...draft, confirmed: false, assetIds: event.target.checked ? [...draft.assetIds, asset.id] : draft.assetIds.filter(id => id !== asset.id) })} /><span className="asset-filename">{asset.original_filename}<span className="micro">{kindLabels[asset.kind]} · {asset.mime_type === 'application/pdf' ? 'PDF 原文件（只下载）' : '已上传图片'}</span></span></label></li>)}</ul><p className="micro" aria-live="polite">已选 {draft.assetIds.length} / 8{assetsTruncated ? ' · 仅显示前 100 份可用范围内的素材' : ''}</p>{missingSelected && !assetsLoading && <p className="notice">部分已选素材不在最新可用列表中，请清除选择并重新核对。<button type="button" className="text-button" disabled={inputLocked} onClick={() => updateDraft({ ...draft, assetIds: draft.assetIds.filter(id => assets.some(asset => asset.id === id)), confirmed: false })}>移除不可用选择</button></p>}<label className="check-field website-confirmation"><input type="checkbox" checked={factsConfirmed} disabled={inputLocked} onChange={event => { confirmedRevisionRef.current = restaurant.revision; updateDraft({ ...draft, confirmed: event.target.checked }); }} /><span>确认资料真实且所选图片/菜单允许公开<span className="muted">（必填；人工确认的菜单文字与所选原文件将按上述说明公开）</span></span></label><div className="save-row"><button type="button" className="primary-button" disabled={generationBlockers.length > 0} aria-describedby={`${prefix}-generation-blockers`} onClick={generate}>确认资料并生成网页</button><button type="button" className="text-button" disabled={discardDisabled} onClick={discardDraft}>{attempt ? '放弃修改并清除未确认请求' : '放弃未提交的网页修改'}</button></div><div id={`${prefix}-generation-blockers`} className="micro website-generation-blockers" aria-live="polite">{generationBlockers.length > 0 ? <><p>暂不能生成，请处理以下全部阻止原因</p><ul>{generationBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul></> : <p>当前生成条件已满足。点击会提交新的建站任务，可能产生多轮模型费用；不会自动生成或发布。</p>}</div></section>
-    {!!state?.jobs.length && <section className="website-section"><h3>任务记录</h3><p className="micro">仅展示最近20条；接口可返回更多任务。失败任务不会自动重试或换键新生成。</p><ul className="website-jobs">{[...state.jobs].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)).slice(0, 20).map(job => {
-      const diagnostics = job.progress?.diagnostics ?? [...(job.trace ?? [])].reverse().find(item => !item.model_call && !/model|模型/i.test(item.action) && item.diagnostics.length)?.diagnostics ?? [];
-      return <li key={job.id}><span>{job.kind === 'chat' ? '需求讨论' : '网页生成'} · {jobLabels[job.status]}</span><time className="micro" dateTime={job.created_at}>{formatTime(job.created_at)}</time>
-        {job.status === 'failed' && <div className="website-job-failure"><p>{websiteJobErrorMessage(job.error_code)}{job.error_code && <>（<code>{job.error_code}</code>）</>}</p>{diagnostics.length > 0 && <Diagnostics items={diagnostics} />}</div>}
-      </li>;
-    })}</ul></section>}
-    <section className="website-section" aria-labelledby={`${prefix}-versions-title`}><h3 id={`${prefix}-versions-title`}>03 / 网页版本与预览</h3><p className="micro">最近 20 个版本。预览不发布；选择旧版本也不会自动回滚。</p>{versions.length === 0 && !loading && <p className="micro website-empty">尚无生成版本。后台任务成功后，真实版本会显示在这里。</p>}<ul className="website-versions">{versions.map(version => <li key={version.id} className={selectedId === version.id ? 'selected' : ''}><button type="button" className="text-button" aria-pressed={selectedId === version.id} onClick={() => { setSelectedId(version.id); setPublicationConfirmed(false); setPublishTarget(null); }}><span>版本 {version.version_number}{state?.publication.published_version_id === version.id ? publicationNeedsCheck || checking || !!loadError ? ' · 上次读取的发布版本' : ' · 当前本地发布' : ''}</span><time className="micro" dateTime={version.created_at}>{formatTime(version.created_at)}</time><span className="website-summary">{version.summary}</span></button><button type="button" disabled={previewPending || !active} onClick={() => { setSelectedId(version.id); setPublicationConfirmed(false); setPublishTarget(null); void openPreview(version); }}>预览此版本</button></li>)}</ul>
-      {previewPending && <div className="notice" role="status"><p>正在读取安全网页文档与此版本的授权素材…</p><button type="button" className="text-button" onClick={closePreview}>取消预览</button></div>}<ErrorMessage error={previewError} readOnly />
-      {preview && <section className="website-preview" aria-labelledby={`${prefix}-preview-title`}><div className="row-heading"><h3 id={`${prefix}-preview-title`}>预览版本 {state?.versions.find(version => version.id === preview.versionId)?.version_number ?? '已生成'}</h3><button type="button" className="text-button" onClick={closePreview}>关闭预览</button></div><div className="button-row" role="group" aria-label="预览尺寸"><button type="button" aria-pressed={viewport === 'desktop'} onClick={() => setViewport('desktop')}>桌面</button><button type="button" aria-pressed={viewport === 'mobile'} onClick={() => setViewport('mobile')}>手机 · 390px</button></div><p className="micro">预览框内可滚动，网页里的菜单、联系方式等锚点可直接点击跳转；切换桌面／手机会重新从网页顶部显示。隔离预览仍禁用脚本、同源权限、表单与网络连接，内容与菜单真实性需人工核对。</p><div className="button-row website-preview-links"><a href={preview.fullUrl} target="_blank" rel="noopener noreferrer">在新窗口打开完整预览（原图与完整尺寸）</a></div>{preview.reducedImages > 0 && <p className="notice" role="status">有 {preview.reducedImages} 张图片因隔离预览文档大小限制以占位显示；请在新窗口预览或下载原图核对。</p>}{preview.originals.length > 0 && <div className="button-row website-pdf-downloads">{preview.originals.map(image => <a key={image.id} href={image.url} download={image.label} rel="noopener">下载 {image.label}</a>)}</div>}<div className={`website-preview-frame ${viewport}`}><iframe key={`${preview.versionId}-${viewport}`} src={preview.documentUrl} sandbox="allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerPolicy="no-referrer" title={`餐厅网页隔离预览：${restaurant.name}`} /></div>{preview.pdfs.length > 0 && <div className="button-row website-pdf-downloads">{preview.pdfs.map(pdf => <a key={pdf.id} href={pdf.url} download={`menu-${pdf.id}.pdf`} rel="noopener">下载此版本菜单 PDF</a>)}</div>}</section>}
+    {jobsActive && <p className="wb-notice" role="status">A background job is active. You can read content, preview saved versions, and open history. New changes must wait.</p>}
+    <AgentProgress job={progressJob} waiting={!!generationWaiting} stale={!!loadError || cancelNeedsCheck} headingId={`${prefix}-agent-progress`} />
+    {canStopGeneration && progressJob && <section className="wb-notice"><h3>Stop this generation</h3>{cancelTargetId === progressJob.id ? <><p>Stop this job? It will not publish or restart. Model usage already recorded is retained.</p><button type="button" disabled={!active || busy || contentBusy || pending !== null || cancelNeedsCheck} onClick={() => void stopGeneration(progressJob.id)}>Confirm stop</button><button type="button" disabled={pending === "cancel"} onClick={() => setCancelTargetId(null)}>Keep running</button></> : <button type="button" disabled={!active || busy || contentBusy || pending !== null || cancelNeedsCheck} onClick={() => setCancelTargetId(progressJob.id)}>Stop generation</button>}{cancelNeedsCheck && <p>Stop result requires a manual check.</p>}</section>}
+    <details onToggle={event => { if (!event.currentTarget.open) usage.close(); }}><summary>Model usage · observation mode</summary><WebsiteUsagePanel usage={usage} jobId={usageJobId} active={active} headingId={`${prefix}-usage-title`} /></details>
+    {!!activeJobs.length && <details><summary>Active jobs</summary>{activeJobs.map(job => <p key={job.id}>{job.kind} · {job.status} · {formatTime(job.created_at)}</p>)}</details>}
+    <button type="button" disabled={pending !== null || !active} onClick={() => setReload(value => value + 1)}>Check website status</button>
+  </>;
+  const design = <>
+    <section className="website-section" aria-labelledby={`${prefix}-generate-title`}><h3 id={`${prefix}-generate-title`}>Create a new AI design</h3><p className="wb-small">A new AI-generated layout using saved restaurant facts. AI edits to an existing design are not available yet. Nothing publishes automatically.</p>
+      {!state?.model_configured && <p className="wb-notice">Design generation is unavailable. Content updates and saved previews do not require AI.</p>}
+      <label className="field" htmlFor={`${prefix}-brief`}>Design brief<textarea id={`${prefix}-brief`} rows={4} maxLength={3000} value={draft.brief} disabled={inputLocked} onChange={event => updateDraft({ ...draft, brief: event.target.value, confirmed: false })} placeholder="Describe the layout, style and what to highlight." /></label>
+      <details><summary>Saved facts & menu</summary><p>{restaurant.name} · {state?.menu.status === "confirmed" ? `${state.menu.item_count} confirmed menu items` : "No confirmed menu"}</p><p className="wb-small">Missing facts: {restaurant.readiness.missing_fields.join(", ") || "None reported"}</p><dl className="website-facts">{profileFields.map(field => <div key={field.key}><dt>{field.key}</dt><dd>{restaurant[field.key] || "Not set"}</dd></div>)}</dl></details>
+      <div className="row-heading"><h3>Public assets</h3><button type="button" disabled={inputLocked || assetsLoading} onClick={() => setAssetReload(value => value + 1)}>Refresh assets</button></div>
+      <p className="wb-small">Choose up to 8 real uploads. At most one logo and one menu file. Menu images / PDF are not sent for design vision analysis.</p>
+      {assetsLoading && <p role="status">Reading assets…</p>}<ErrorMessage error={assetsError} readOnly />
+      {!assetsLoading && !assets.length && <p className="wb-small">No available uploads. A text-only design is supported.</p>}
+      <ul className="website-asset-options">{assets.map(asset => <li key={asset.id}><label className="check-field"><input type="checkbox" checked={draft.assetIds.includes(asset.id)} disabled={inputLocked || assetsLoading || (!draft.assetIds.includes(asset.id) && (draft.assetIds.length >= 8 || (["menu_source", "logo"].includes(asset.kind) && assets.some(chosen => chosen.kind === asset.kind && draft.assetIds.includes(chosen.id)))))} onChange={event => updateDraft({ ...draft, confirmed: false, assetIds: event.target.checked ? [...draft.assetIds, asset.id] : draft.assetIds.filter(id => id !== asset.id) })} /><span>{asset.original_filename}<span className="micro">{kindLabels[asset.kind]} · {asset.mime_type === "application/pdf" ? "PDF (download only)" : "Uploaded image"}</span></span></label></li>)}</ul>
+      {draft.assetIds.length > 0 && <ul className="website-selected-assets" aria-label="Selected asset thumbnails">{selectedAssets.map((asset, index) => <li key={draft.assetIds[index]}>{asset ? <WebsiteAssetThumbnail restaurantId={restaurant.id} asset={asset} selected active={active} /> : <p>Selected asset unavailable. Remove and review the selection.</p>}</li>)}</ul>}
+      {assetsTruncated && <p className="wb-small">Showing the first 100 available assets.</p>}{missingSelected && <p className="wb-notice">An asset is unavailable. Select available uploads and confirm again.</p>}
+      <label className="check-field website-confirmation"><input type="checkbox" checked={factsConfirmed} disabled={inputLocked || assetsLoading || !!assetsError || missingSelected} onChange={event => { confirmedRevisionRef.current = restaurant.revision; updateDraft({ ...draft, confirmed: event.target.checked }); }} /><span>I confirm the saved facts and permission to publish these assets. This does not authorize image sharing with AI.</span></label>
+      {needsVision ? <div className="website-vision-consent"><p id={`${prefix}-vision-help`} className="wb-small">Only selected restaurant, dish and logo thumbnails are sent to DeepSeek for layout analysis. This is not menu OCR. Menu images / PDF are not sent. Multiple model calls may be needed. Local thumbnails do not mean AI has seen the images.</p><label className="check-field website-confirmation"><input type="checkbox" checked={visionConfirmed} disabled={inputLocked || assetsLoading || !!assetsError || missingSelected} aria-describedby={`${prefix}-vision-help`} onChange={event => { visionRevisionRef.current = restaurant.revision; updateDraft({ ...draft, visionConfirmed: event.target.checked }); }} /><span>I separately authorize sending selected photo / logo thumbnails to DeepSeek. Changing the brief, selection or restaurant revision requires confirmation again.</span></label></div> : <p className="wb-small">No image sharing consent is requested for this selection. Menu images / PDF remain in the existing menu workflow.</p>}
+      <div className="save-row"><button type="button" className="primary-button" disabled={generationBlockers.length > 0} aria-describedby={`${prefix}-generation-blockers`} onClick={generate}>Create draft</button><button type="button" disabled={discardDisabled} onClick={discardDraft}>Discard design changes</button></div>
+      <div id={`${prefix}-generation-blockers`} className="wb-small" aria-live="polite">{generationBlockers.length > 0 ? <><p>Before creating a draft</p><ul>{generationBlockers.map(reason => <li key={reason}>{reason}</li>)}</ul></> : <p>Creates a real background job. Preview opens when the saved version is ready. Nothing publishes automatically.</p>}</div>
     </section>
-    <section className="website-section" aria-labelledby={`${prefix}-publication-title`}><h3 id={`${prefix}-publication-title`}>04 / 本地发布与回滚</h3>{publicationNeedsCheck && <p className="notice" role="status">原操作已处理，当前版本尚待核对。以下保留上次读取的状态，不代表原操作的版本仍是当前版本。</p>}{state?.publication.published_version_id ? <p className="micro">{publicationNeedsCheck || checking || !!loadError ? '上次读取的发布版本' : '当前发布版本'}：{publishedNumber ?? '不在最近版本列表'} · 发布修订 {state.publication.revision}</p> : <p className="micro">{publicationNeedsCheck || checking || !!loadError ? '尚待核对当前发布状态。' : '尚未本地发布。'}生成成功不等于发布成功。</p>}{publicUrl && <p className="website-public-url"><a href={publicUrl} target="_blank" rel="noopener noreferrer">打开已发布的本地网页</a><span className="micro">{publicUrl}</span></p>}{state?.publication.deployment_mode === 'unconfigured' && <p className="notice">本地发布服务未配置，发布与回滚已停用。</p>}<div className="field"><label htmlFor={`${prefix}-slug`}>本地网页路径（不是域名注册）</label><input id={`${prefix}-slug`} value={slug} minLength={3} maxLength={50} pattern={websiteSlugPattern.source} readOnly={!!state?.publication.slug} disabled={inputLocked} aria-describedby={`${prefix}-slug-help`} onChange={event => { setSlug(event.target.value); setPublicationConfirmed(false); setPublishTarget(null); }} /><p id={`${prefix}-slug-help`} className="micro">3–50 位；首尾必须为小写字母或数字，中间可含连字符；禁用 admin、api、auth、www。第一次发布后固定不变，不会注册二级域名或绑定公网域名。</p>{slug && !websiteSlugPattern.test(slug) && <p className="micro">路径格式不正确：首尾须为字母或数字，长度 3–50，且不能使用保留名称。</p>}</div><p className="micro">本次选择：{selected ? `版本 ${selected.version_number} · ${selected.summary}` : '请先选择一个真实版本'}{rollback ? ' · 将回滚到较早版本' : ''}</p><label className="check-field website-confirmation"><input type="checkbox" checked={publicationConfirmed} disabled={inputLocked || jobsActive} onChange={event => { setPublicationConfirmed(event.target.checked); setPublishTarget(null); }} /><span>我确认这一版可公开展示（本地网址）</span></label><div className="save-row"><button type="button" disabled={inputLocked || jobsActive || publicationNeedsCheck || checking || !!loadError || restaurantDirty || !['draft', 'active'].includes(restaurant.status) || !selected || state?.publication.deployment_mode !== 'local' || !publicationConfirmed || !websiteSlugPattern.test(slug) || selected.id === state.publication.published_version_id} onClick={() => setPublishTarget(selected)}>{rollback ? '回滚到此版本' : '发布此版本到本地'}</button></div>{publishTarget && <section className="notice confirmation"><h3>确认{rollback ? '回滚' : '本地发布'}版本 {publishTarget.version_number}？</h3><p>{publishTarget.summary}</p><p>将改变本地网址展示的版本；不会自动重放，也不会开放真实预订。其他网页版本与原始素材保留。</p><div className="button-row"><button type="button" disabled={inputLocked || jobsActive || !publicationConfirmed} onClick={publish}>确认{rollback ? '回滚到此版本' : '本地发布'}</button><button type="button" className="text-button" disabled={pending !== null} onClick={() => setPublishTarget(null)}>取消</button></div></section>}</section>
+    <details><summary>Ask about design</summary><ol className="website-messages">{state?.agent.messages.map((message, index) => <li key={index}><span>{message.role === "user" ? "You" : "Design assistant"}</span><p>{message.content}</p></li>)}</ol><form onSubmit={sendMessage}><label className="field" htmlFor={`${prefix}-message`}>Optional question<textarea id={`${prefix}-message`} rows={3} maxLength={2000} value={draft.message} disabled={inputLocked} onChange={event => updateDraft({ ...draft, message: event.target.value })} /></label><button type="submit" disabled={modelLocked || !draft.message.trim()}>Send question</button></form></details>
+  </>;
+  const previewPanel = <>
+    {previewPending && <p role="status">Loading the saved preview…</p>}<ErrorMessage error={previewError} readOnly />
+    {preview ? <section className="website-preview"><div className="row-heading"><h3>Preview v{preview.versionNumber}{preview.versionId === state?.publication.published_version_id ? " · Published" : " · Saved, not published"}</h3><div role="group" aria-label="Preview size"><button type="button" aria-pressed={viewport === "desktop"} onClick={() => setViewport("desktop")}>Desktop</button><button type="button" aria-pressed={viewport === "mobile"} onClick={() => setViewport("mobile")}>Mobile</button></div></div><p className="wb-small">Isolated saved preview. Scripts, forms, same-origin access and network connections are disabled.</p>
+      <div className={`website-preview-frame ${viewport}`}><iframe key={preview.versionId} src={preview.documentUrl} sandbox="allow-popups allow-popups-to-escape-sandbox allow-downloads" referrerPolicy="no-referrer" title={`Website preview: ${restaurant.name}`} /></div>
+      <a href={preview.fullUrl} target="_blank" rel="noopener noreferrer">Open full preview</a>
+      {preview.reducedImages > 0 && <p className="wb-small">{preview.reducedImages} images could not fit in the isolated preview. Open the full preview or download originals.</p>}
+      <div className="button-row">{preview.originals.map(image => <a key={image.id} href={image.url} download={image.label} rel="noopener">Download {image.label}</a>)}{preview.pdfs.map(pdf => <a key={pdf.id} href={pdf.url} download={`menu-${pdf.id}.pdf`} rel="noopener">Download original menu PDF</a>)}</div>
+      <button type="button" onClick={() => { autoPreviewRef.current = preview.versionId; closePreview(); }}>Close preview</button>
+    </section> : !previewPending && <div className="wb-notice"><p>{selected ? "The saved preview is not open." : "Create a draft to preview your website."}</p>{selected && <button type="button" disabled={!active} onClick={() => void openPreview(selected)}>Open saved preview</button>}</div>}
+  </>;
+  const publicationPanel = <section className="wb-publication"><p className="wb-small">{publicUrl ? "Local test only · not a public domain" : "Publishing requires the local deployment service."}{publishedNumber ? ` · Published v${publishedNumber}` : ""}</p>
+    {publicationNeedsCheck && <p className="wb-notice">Original publication was acknowledged. Current publication still needs a read check; do not resubmit.</p>}
+    <button type="button" className="primary-button" disabled={!preview || !selected || preview.versionId !== selected.id || inputLocked || jobsActive || contentDirty || restaurantDirty || !!loadError || publicationNeedsCheck || state?.publication.deployment_mode !== "local"} onClick={() => void reviewPublication()}>{reviewPending ? "Reading review…" : preview ? `Publish preview v${preview.versionNumber}` : "Publish saved preview"}</button>
+    {publishReview && publishTarget && publicationConfirmed && <section className="wb-review" role="dialog" aria-modal="false" aria-labelledby={`${prefix}-publish-review`}><h3 id={`${prefix}-publish-review`}>Review preview v{publishReview.version.version_number}</h3>{publishStale && <p role="alert">Saved facts or publication changed. Cancel and review this draft again.</p>}<p>Target: {publishReview.version.id}</p><p className="wb-small">Publication revision {publishReview.input.expected_revision}. This publishes only the reviewed website; it never restores restaurant or menu data.</p>
+      {!publishReview.report.publication.slug && <label className="field" htmlFor={`${prefix}-slug`}>Local website path<input id={`${prefix}-slug`} value={slug} minLength={3} maxLength={50} pattern={websiteSlugPattern.source} disabled={pending !== null || !!attempt} onChange={event => { setSlug(event.target.value); setPublishReview(current => current ? { ...current, input: { ...current.input, slug: event.target.value } } : null); }} /><span className="wb-small">3–50 lowercase letters / digits / hyphens. Not a domain registration.</span></label>}
+      {publishReview.contentReview ? <WebsiteContentReviewPanel review={publishReview.contentReview} /> : publishReview.version.origin === 'content_refresh' && <p className="wb-small">The previous content-save comparison is not retained in this session. Review the saved preview; current restaurant differences below are not a comparison with the published website.</p>}
+      {(publishReview.input.content_mode === "historical" || publishReview.version.origin === 'legacy') && <><p className="wb-notice">This draft contains historical facts that differ from the saved restaurant. Review the differences before restoring this website.</p><h4>Historical version vs saved restaurant</h4><WebsiteDifferences differences={publishReview.report.differences} beforeLabel="Historical version" afterLabel="Saved restaurant" /><label className="wb-check"><input type="checkbox" checked={historicalConfirmed} disabled={pending !== null || !!attempt} onChange={event => setHistoricalConfirmed(event.target.checked)} />I reviewed the historical facts. Publish this website without restoring restaurant data.</label></>}
+      <button type="button" className="primary-button" disabled={publishStale || inputLocked || jobsActive || contentDirty || restaurantDirty || ((publishReview.input.content_mode === "historical" || publishReview.version.origin === 'legacy') && !historicalConfirmed) || (publishReview.input.slug !== undefined && !websiteSlugPattern.test(publishReview.input.slug))} onClick={publish}>Confirm publish</button><button type="button" disabled={pending !== null} onClick={() => { setPublishTarget(null); setPublishReview(null); setPublicationConfirmed(false); }}>Cancel</button>
+    </section>}
   </section>;
+  if (expired) return <p role="alert">Session expired. Sign in again; original requests will not be replayed.</p>;
+  return <WebsiteWorkbench restaurantId={restaurant.id} active={active} busy={busy || pending !== null || !!attempt || reviewPending} restaurantDirty={restaurantDirty} selectedId={selectedId} previewVersion={preview ? { id: preview.versionId, version_number: preview.versionNumber } : undefined}
+    refreshToken={`${restaurant.revision}:${state?.menu.revision ?? 0}:${state?.publication.revision ?? 0}:${jobsActive}:${reload}`} design={design} preview={previewPanel} status={status} publication={publicationPanel}
+    onPreview={selectVersion} onReport={reportChanged} onSaved={onContentSaved} onContentReview={contentReviewChanged} onDirtyChange={contentChanged} onBusyChange={contentRequestChanged} />;
 }

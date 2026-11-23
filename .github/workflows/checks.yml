@@ -2,8 +2,9 @@ name: Merchant core checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, railway-deploy]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,9 +13,13 @@ jobs:
   merchant-core:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        pg-major: [16, 17]
     services:
       postgres:
-        image: postgres:16
+        image: postgres:${{ matrix.pg-major }}
         env:
           POSTGRES_PASSWORD: ci-disposable-service-password
         ports:
@@ -25,6 +30,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      TEST_PG_MAJOR: "${{ matrix.pg-major }}"
+      TEST_PG_PORT: "55439"
       CI_DATABASE_ADMIN_URL: postgresql://postgres:ci-disposable-service-password@127.0.0.1:55439/postgres
       CI_TEST_OWNER_PASSWORD: ci-disposable-owner-password
       CI_TEST_APP_PASSWORD: ci-disposable-app-password
@@ -58,6 +65,9 @@ jobs:
       - name: Frontend typecheck and build
         working-directory: frontend
         run: npm run build
+      - name: Frontend non-browser regression tests
+        working-directory: frontend
+        run: node --test test/*.mjs
       - name: Set up disposable real test database
         working-directory: backend
         run: node --import tsx test/setup-ci.ts
@@ -66,3 +76,19 @@ jobs:
         run: npm run test:ci
       - name: Check production dependency advisories
         run: npm audit --prefix backend --omit=dev && npm audit --prefix frontend --omit=dev
+
+  deployment-images:
+    needs: merchant-core
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend image without production credentials
+        run: docker build -t tablefolk-backend:check backend
+      - name: Build frontend image with shared types
+        run: docker build -f frontend/Dockerfile -t tablefolk-frontend:check .
+      - name: Validate frontend proxy configuration
+        run: >-
+          docker run --rm --entrypoint caddy
+          -e PORT=8080 -e BACKEND_UPSTREAM=backend.railway.internal:4000
+          tablefolk-frontend:check validate --config /etc/caddy/Caddyfile --adapter caddyfile

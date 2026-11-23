@@ -98,10 +98,58 @@ export interface WebsiteGenerateInput {
   brief: string;
   asset_ids: string[];
   public_assets_confirmed: true;
+  image_vision_confirmed?: true;
   expected_restaurant_revision: number;
   expected_menu_revision?: number;
 }
-export interface WebsitePublishInput { version_id: string; slug?: string; expected_revision: number }
+export interface WebsitePublishInput {
+  version_id: string; slug?: string; expected_revision: number;
+  expected_checksum?: string; expected_public_content_hash?: string;
+  content_mode?: 'current' | 'historical'; review_confirmed?: true;
+}
+export interface WebsiteContentVersion extends WebsiteVersion {
+  source_status: 'available' | 'missing' | 'incompatible';
+  origin: 'generation' | 'content_refresh' | 'legacy';
+  base_version_id: string | null; public_content_hash: string | null;
+}
+export interface WebsiteEditableContent {
+  restaurant: import('./types').RestaurantProfile;
+  restaurant_revision: number;
+  opening_hours: import('./types').OpeningInterval[];
+  menu: { revision: number; status: 'empty' | 'draft' | 'confirmed'; data: import('./menu-types').MenuData };
+}
+export interface WebsiteContentDifference {
+  field: 'name' | 'description' | 'cuisine' | 'address' | 'contact' | 'timezone' | 'locale' | 'currency' | 'hours' | 'menu' | 'reservation';
+  label: string; before: string; after: string;
+}
+// 前端内存中的候选版本保存差异；来自成功回执或已保存快照，不是当前事实差异。
+export interface WebsiteContentReview {
+  restaurant_id: string; version_id: string; version_number: number; base_version_id: string;
+  checksum: string; public_content_hash: string; differences: WebsiteContentDifference[];
+}
+export interface WebsiteWorkbenchReport {
+  restaurant_id: string; generated_at: string; publication: WebsitePublication;
+  published_version: WebsiteContentVersion | null; editing_version: WebsiteContentVersion | null;
+  latest_version: WebsiteContentVersion | null; content: WebsiteEditableContent;
+  current_public_content_hash: string; differences: WebsiteContentDifference[];
+  saved_differences?: WebsiteContentDifference[];
+  blockers: string[]; model_configured: boolean; ai_usage_mode: 'observation';
+}
+export interface WebsiteContentPreviewInput {
+  base_version_id: string; expected_restaurant_revision: number; expected_menu_revision: number;
+  expected_public_content_hash: string; expected_publication_revision: number;
+  restaurant_patch?: import('./types').RestaurantPatchInput;
+  opening_hours?: import('./types').OpeningInterval[];
+  menu_data?: import('./menu-types').MenuData; menu_review_confirmed?: true;
+}
+export interface WebsiteContentPreviewResult {
+  version: WebsiteContentVersion; content: WebsiteEditableContent; public_content_hash: string;
+  base_publication_revision: number; differences: WebsiteContentDifference[];
+  changed: boolean; ai_called: false; warnings: string[];
+}
+export interface WebsiteContentVersionPage {
+  items: WebsiteContentVersion[]; has_more: boolean; next_cursor: string | null;
+}
 export interface WebsitePreviewAsset { id: string; content_url: string; mime_type: AssetMime }
 export interface WebsitePreview { html: string; assets: WebsitePreviewAsset[]; checksum: string }
 export type WebsiteAttempt =

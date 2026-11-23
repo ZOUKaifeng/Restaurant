@@ -4,7 +4,7 @@ import { createDecipheriv } from 'node:crypto';
 import type { Pool } from 'pg';
 import type { FastifyInstance, HTTPMethods } from 'fastify';
 import { loadConfig, type Config } from '../src/config.js';
-import { assertAppDatabase, createPool, id, transaction } from '../src/db.js';
+import { assertAppDatabase, id, transaction } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { migrate } from '../scripts/migrate.js';
 import { contract, schemaValidator } from '../src/validation.js';
@@ -16,24 +16,17 @@ let sequence = 0;
 const password = '测试专用-Valid-Password-2026!';
 const newPassword = '测试专用-New-Password-2026!';
 interface Actor { cookie: string; csrf: string; email: string; password: string }
-const tables = 'website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_references,asset_upload_intents,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
-function testUrl(key: string, role: string): string {
-  const value = process.env[key];
-  assert.ok(value, `必须提供真实 ${key}，不跳过、不连接开发库`);
-  const url = new URL(value);
-  assert.equal(url.hostname, '127.0.0.1');
-  assert.equal(url.port, '55439');
-  assert.equal(url.pathname, '/restaurant_test');
-  if (role) assert.equal(decodeURIComponent(url.username), role);
-  return value;
-}
+const tables = 'ai_calendar_credit_grants,website_content_actions,website_version_sources,billing_subscriptions,billing_offer_grants,ai_quota_ledger,ai_quota_periods,ai_model_calls,billing_accounts,analytics_events,analytics_daily,website_model_calls,menu_jobs,menu_drafts,website_publish_actions,website_publications,website_jobs,website_versions,website_agents,asset_references,asset_upload_intents,assets,reservations,reservation_events,reservation_access_tokens,audit_logs,email_outbox,opening_hours,restaurant_members,auth_tokens,auth_sessions,auth_identities,restaurants,users';
+import { createTestDatabasePool, createTestDatabasePools, readTestDatabaseScope } from './database-scope.js';
 before(async () => {
-  const appUrl = testUrl('TEST_DATABASE_URL', 'restaurant_test_app');
-  const ownerUrl = testUrl('TEST_MIGRATION_DATABASE_URL', '');
-  assert.notEqual(new URL(ownerUrl).username, new URL(appUrl).username);
-  config = loadConfig({ ...process.env, NODE_ENV: 'test', DATABASE_URL: appUrl, MIGRATION_DATABASE_URL: ownerUrl, APP_ORIGIN: 'https://localhost:5173', EMAIL_MODE: 'disabled' });
-  owner = createPool(ownerUrl);
-  pool = createPool(appUrl);
+  const scope = readTestDatabaseScope();
+  const { databaseUrl: appUrl, migrationDatabaseUrl: ownerUrl } = scope;
+  config = loadConfig({ NODE_ENV: 'test', DATABASE_URL: appUrl, MIGRATION_DATABASE_URL: ownerUrl,
+    TOKEN_PEPPER: process.env.TOKEN_PEPPER ?? 'merchant-core-fixture-pepper-'.repeat(4),
+    CURSOR_SECRET: process.env.CURSOR_SECRET ?? 'merchant-core-fixture-cursor-'.repeat(4),
+    OUTBOX_ENCRYPTION_KEY: process.env.OUTBOX_ENCRYPTION_KEY ?? 'a4'.repeat(32),
+    APP_ORIGIN: 'https://localhost:5173', EMAIL_MODE: 'disabled' });
+  ({ owner, pool } = await createTestDatabasePools(scope));
   await migrate(owner, 'restaurant_test_app');
   await assertAppDatabase(pool);
   await owner.query(`TRUNCATE ${tables}`);
@@ -339,7 +332,7 @@ test('真实 PG 商家账户与餐厅完整闭环', async t => {
     assert.equal((await request('GET', `/restaurants?limit=1&cursor=${cursor}`, bob)).statusCode, 400);
     assert.equal((await request('GET', `/restaurants?limit=2&cursor=${cursor}`, alice)).statusCode, 400);
     assert.equal((await request('GET', '/restaurants?cursor=forged', alice)).statusCode, 400);
-    await app.close(); await pool.end(); pool = createPool(config.databaseUrl); app = createApp({ pool, config }); await app.ready();
+    await app.close(); await pool.end(); pool = await createTestDatabasePool('app', readTestDatabaseScope()); app = createApp({ pool, config }); await app.ready();
     const persisted = await request('GET', `/restaurants/${restaurant.id}`, alice);
     assert.equal(persisted.statusCode, 200); assert.equal(persisted.headers.etag, etag); assert.equal(persisted.json().timezone, 'Europe/London');
     assert.equal((await request('GET', `/restaurants/${restaurant.id}/opening-hours`, alice)).json().intervals.length, 0);
@@ -428,7 +421,7 @@ test('真实 PG 商家账户与餐厅完整闭环', async t => {
     await pool.end();
     const result = await request('GET', '/auth/registration-policy');
     assert.equal(result.statusCode, 503); assert.ok(!result.body.includes('SELECT'));
-    pool = createPool(config.databaseUrl);
+    pool = await createTestDatabasePool('app', readTestDatabaseScope());
   });
   assert.equal(Object.keys(contract.paths).length, 14);
 });

@@ -5,10 +5,11 @@ import { id, transaction } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import { lockAuthenticated, requireSession, requireWrite, type Session } from './security.js';
 import { normalizeMenuData } from './menu-data.js';
+import { applyMenuDraft, confirmMenu } from './menu-content.js';
 import {
-  lockMenuDraft, lockMenuRestaurant, lockMenuSources, menuAudit, menuDraftView, menuFingerprint,
-  menuItemCount, menuJobColumns, menuJobView, menuModelConfigured, readMenuDraft, requireMenuAI,
-  requireMenuIdle, requireMenuRecognitionQuota, requireMenuRevision, type MenuJobRecord,
+  lockMenuDraft, lockMenuRestaurant, lockMenuSources, menuAudit, menuFingerprint,
+  menuJobColumns, menuJobView, menuModelConfigured, readMenuDraft, requireMenuAI,
+  requireMenuRecognitionQuota, requireMenuRevision, type MenuJobRecord,
   type MenuRecognitionInput, type MenuState,
 } from './menu-access.js';
 
@@ -92,15 +93,8 @@ export function registerMenus(app: FastifyInstance, pool: Pool, config: Config):
     const session = (await requireWrite(pool, config, request))!, rid = restaurantId(request);
     const value = body(request, ['data', 'expected_revision']);
     const expected = revision(value.expected_revision), data = normalizeMenuData(value.data);
-    return locked(pool, config, session, rid, async db => {
-      await requireMenuIdle(db, rid);
-      const current = await lockMenuDraft(db, rid);
-      requireMenuRevision(current, expected);
-      await db.query(`UPDATE menu_drafts SET data=$2,revision=revision+1,status='draft',confirmed_at=NULL,
-        updated_at=clock_timestamp() WHERE restaurant_id=$1`, [rid, JSON.stringify(data)]);
-      await menuAudit(db, session.user.id, rid, current.id, 'menu_updated', request.id);
-      return { ...menuDraftView(current), data, revision: current.revision + 1, status: 'draft', confirmed_at: null };
-    });
+    return locked(pool, config, session, rid, db => applyMenuDraft(db, rid, data, expected,
+      { actorId: session.user.id, requestId: request.id }));
   });
   app.post(`${base}/confirm`, async (request, reply) => {
     privateHeaders(reply);
@@ -108,18 +102,7 @@ export function registerMenus(app: FastifyInstance, pool: Pool, config: Config):
     const value = body(request, ['expected_revision', 'confirmed']);
     if (value.confirmed !== true) invalid('confirmed', 'CONFIRMATION_REQUIRED');
     const expected = revision(value.expected_revision);
-    return locked(pool, config, session, rid, async db => {
-      await requireMenuIdle(db, rid);
-      const current = await lockMenuDraft(db, rid);
-      requireMenuRevision(current, expected);
-      const count = menuItemCount(normalizeMenuData(current.data));
-      if (count < 1 || count > 80) throw new ApiError(422, 'MENU_EMPTY');
-      if (current.status === 'confirmed') return menuDraftView(current);
-      const updated = (await db.query<typeof current>(`UPDATE menu_drafts SET status='confirmed',revision=revision+1,
-        confirmed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE restaurant_id=$1
-        RETURNING id,revision,status,data,source_asset_ids,confirmed_at`, [rid])).rows[0]!;
-      await menuAudit(db, session.user.id, rid, current.id, 'menu_confirmed', request.id);
-      return menuDraftView(updated);
-    });
+    return locked(pool, config, session, rid, db => confirmMenu(db, rid, expected,
+      { actorId: session.user.id, requestId: request.id }));
   });
 }

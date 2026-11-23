@@ -51,6 +51,7 @@ type RequestOptions = {
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<{ data: T; headers: Headers }> {
   if (options.csrf) await refreshCsrf();
+  if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   const headers = new Headers({ Accept: 'application/json', ...options.headers });
   if (options.body !== undefined) headers.set('Content-Type', 'application/json');
   if (options.csrf && csrfToken) headers.set('X-CSRF-Token', csrfToken);
@@ -80,6 +81,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<{
     window.clearTimeout(timer);
     options.signal?.removeEventListener('abort', abort);
   }
+  if (options.signal?.aborted) throw new DOMException('请求已取消', 'AbortError');
   if (!response.ok) {
     const body = data && typeof data === 'object' ? data as Partial<ApiErrorBody> : {};
     const details = Array.isArray(body.details)
@@ -102,6 +104,9 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<{
   if (response.status !== 204 && data === undefined) throw new ApiError(502, 'RESPONSE_INVALID');
   return { data: data as T, headers: response.headers };
 }
+
+// Shared transport for restaurant-scoped pages: real session, CSRF, timeout, no replay.
+export { request as merchantRequest };
 
 export function refreshCsrf(): Promise<void> {
   if (!csrfFlight) {

@@ -12,6 +12,10 @@ import { registerAssets } from './assets.js';
 import { registerWebsites } from './website.js';
 import { registerMenus } from './menu.js';
 import { registerReservations } from './reservation.js';
+import { registerAnalytics } from './analytics.js';
+import { registerAiUsage } from './ai-usage.js';
+import { registerBilling } from './billing.js';
+import { registerWebsiteContent } from './website-content.js';
 
 export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   const app = Fastify({
@@ -53,7 +57,11 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
   app.setNotFoundHandler((request, reply) => reply.code(404).send(errorBody(404, request.id)));
   app.get('/api/v1/health/ready', async () => ({
     status: 'ready', database: 'postgresql', email_mode: config.emailMode,
-    scope: 'merchant-core-assets-websites-reservations', storage_mode: config.storageMode,
+    scope: 'merchant-core-assets-websites-reservations-analytics', storage_mode: config.storageMode,
+    analytics_enabled: true, analytics_namespace: config.nodeEnv === 'production' ? 'production' : 'local_test',
+    ai_metering_mode: 'observation', ai_quota_enforced: false, payment_enabled: false,
+    billing_catalog_enabled: true, billing_model: 'subscription_with_credit_addons',
+    website_content_refresh_enabled: true, website_workbench_enabled: true,
     website_model: config.website?.model ?? 'deepseek-flash', website_model_configured: Boolean(config.website?.apiKey), menu_recognition_enabled: true,
     production_acceptance_complete: false,
   }));
@@ -62,8 +70,12 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
     registerRestaurants(routes, pool, config);
     registerAssets(routes, pool, config);
     registerWebsites(routes, pool, config);
+    registerWebsiteContent(routes, pool, config);
     registerMenus(routes, pool, config);
     registerReservations(routes, pool, config);
+    registerAnalytics(routes, pool, config);
+    registerAiUsage(routes, pool, config);
+    registerBilling(routes, pool, config);
   });
   return app;
 }

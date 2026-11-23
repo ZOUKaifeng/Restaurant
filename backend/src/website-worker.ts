@@ -3,10 +3,15 @@ import type { Pool, PoolClient } from 'pg';
 import type { Config } from './config.js';
 import { id, transaction } from './db.js';
 import { ApiError } from './errors.js';
-import { callWebsiteAgent, generateWebsite } from './deepseek.js';
+import { callWebsiteAgent, generateWebsite, parseAiTokenUsage } from './deepseek.js';
+import { startAiCall, finishAiCall } from './ai-metering.js';
 import { renderWebsite } from './website-html.js';
+import { insertWebsiteSource } from './website-source.js';
+import type { WebsiteRawSource } from './website-content-types.js';
 import { runWebsiteAgent } from './website-react.js';
-import type { WebsiteAgentObservation } from './website-agent-types.js';
+import type { WebsiteAgentObservation, WebsiteVisionImage } from './website-agent-types.js';
+import { createAssetStore } from './asset-storage.js';
+import { prepareWebsiteImages, sourcesCurrent, websiteImageSourcesRequired, type WebsiteImageJob } from './website-image-source.js';
 import {
   requireWebsiteAI, verifyWebsiteVersion, websiteAudit, websiteUsageNumber, websiteUsageSummary, type WebsiteJob, type WebsiteMessage,
   type WebsiteVersion,
@@ -17,6 +22,7 @@ const actualClient: WebsiteJobClient = { chat: callWebsiteAgent, generate: gener
 const safeErrors = new Set(['AI_NOT_CONFIGURED', 'AI_CONFIGURATION_INVALID', 'AI_BALANCE_INSUFFICIENT', 'AI_RATE_LIMITED', 'AI_AUTH_FAILED',
   'AI_PROVIDER_UNAVAILABLE', 'AI_TIMEOUT', 'AI_RESPONSE_INVALID', 'AI_OUTPUT_INVALID', 'AI_USAGE_UNAVAILABLE', 'AI_USAGE_INVALID', 'AI_OUTPUT_TRUNCATED', 'WEBSITE_HTML_INVALID',
   'WEBSITE_HTML_TOO_LARGE', 'WEBSITE_CHECKSUM_INVALID', 'WEBSITE_MANIFEST_INVALID',
+  'WEBSITE_IMAGE_SOURCE_UNAVAILABLE', 'WEBSITE_VISION_LIMIT', 'WEBSITE_VISION_INVALID',
   'AGENT_REPAIR_LIMIT', 'AGENT_TOKEN_LIMIT', 'AGENT_TIME_LIMIT', 'AGENT_STEP_LIMIT',
   'WEBSITE_CONTEXT_REVOKED', 'JOB_INTERRUPTED', 'AGENT_CANCELLED']);
 function errorCode(error: unknown): string {
@@ -33,7 +39,7 @@ function errorCode(error: unknown): string {
   return 'AI_PROVIDER_UNAVAILABLE';
 }
 async function lockWorkerContext(db: PoolClient, candidate: Pick<WebsiteJob, 'requesting_user_id' | 'restaurant_id'>): Promise<boolean> {
-  const user = (await db.query('SELECT id,status,email_verified_at FROM users WHERE id=$1 FOR UPDATE', [candidate.requesting_user_id])).rows[0];
+  const user = (await db.query('SELECT id,status,email_verified_at FROM users WHERE id=$1 FOR NO KEY UPDATE', [candidate.requesting_user_id])).rows[0];
   const restaurant = (await db.query('SELECT id,status FROM restaurants WHERE id=$1 FOR UPDATE', [candidate.restaurant_id])).rows[0];
   const membership = (await db.query(`SELECT id FROM restaurant_members WHERE restaurant_id=$1 AND user_id=$2
     AND role='owner' AND status='active' FOR UPDATE`, [candidate.restaurant_id, candidate.requesting_user_id])).rows[0];
@@ -72,6 +78,37 @@ async function claimJob(pool: Pool): Promise<{ job?: WebsiteJob; consumed: boole
     return { job: running, consumed: true };
   });
 }
+async function prepareJobImages(pool: Pool, config: Config, original: WebsiteJob): Promise<WebsiteVisionImage[]> {
+  if (!websiteImageSourcesRequired(original)) return [];
+  const prepared = await transaction(pool, async db => {
+    const valid = await lockWorkerContext(db, original);
+    const job = (await db.query<WebsiteJob & { remaining: number | null }>(`SELECT *,
+      extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
+      FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
+    if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id ||
+        job.status !== 'running' || job.lease_token !== original.lease_token) return { code: 'JOB_INTERRUPTED' };
+    if (!valid || job.remaining === null || job.remaining <= 0) {
+      const code = !valid ? 'WEBSITE_CONTEXT_REVOKED' : 'JOB_INTERRUPTED';
+      await failJob(db, job, code);
+      return { code };
+    }
+    try { return { rows: await sourcesCurrent(db, job, original, valid, job.remaining) }; }
+    catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      const code = errorCode(error);
+      await failJob(db, job, code);
+      return { code };
+    }
+  });
+  if (prepared.code) throw new ApiError(503, prepared.code);
+  if (!prepared.rows?.length) return [];
+  // 短事务提交后才创建存储客户端和读取字节；helper 在所有出口 finally.close。
+  try { return await prepareWebsiteImages(original, prepared.rows, createAssetStore(config)); }
+  catch (error) {
+    if (error instanceof ApiError && ['WEBSITE_IMAGE_SOURCE_UNAVAILABLE', 'WEBSITE_VISION_LIMIT'].includes(error.code)) throw error;
+    throw new ApiError(503, 'WEBSITE_IMAGE_SOURCE_UNAVAILABLE');
+  }
+}
 function observedCall(observation: WebsiteAgentObservation): WebsiteAgentObservation['event']['model_call'] {
   const call = observation.event.model_call;
   const actions = { model_call_started: 'started', model_call_completed: 'completed', model_call_failed: 'failed' };
@@ -97,13 +134,18 @@ function observedCall(observation: WebsiteAgentObservation): WebsiteAgentObserva
       (call.status !== 'failed' && call.error_code !== undefined)) throw new ApiError(503, 'AI_USAGE_INVALID');
   return { ...call, ...(call.status === 'failed' && call.error_code !== undefined ? { error_code: errorCode({ code: call.error_code }) } : {}) };
 }
-async function observeJob(pool: Pool, original: WebsiteJob, observation: WebsiteAgentObservation): Promise<void> {
+async function observeJob(pool: Pool, config: Config, original: WebsiteJob, observation: WebsiteAgentObservation): Promise<void> {
   const call = observedCall(observation);
   const code = await transaction(pool, async db => {
     const valid = await lockWorkerContext(db, original);
     const job = (await db.query<WebsiteJob & { remaining: number | null }>(`SELECT *,
       extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
       FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
+    if (call && call.status !== 'started') {
+      await finishAiCall(db, { requestingUserId: original.requesting_user_id, restaurantId: original.restaurant_id,
+        websiteJobId: original.id, runnerToken: original.lease_token!, callIndex: call.index, status: call.status,
+        usage: parseAiTokenUsage(call), elapsedMs: call.elapsed_ms, ...(call.error_code ? { errorCode: call.error_code } : {}) });
+    }
     if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id) return 'JOB_INTERRUPTED';
     const terminalReason = job.error_code === 'AGENT_CANCELLED' ? 'AGENT_CANCELLED' : 'JOB_INTERRUPTED';
     const active = job.status === 'running' && job.lease_token === original.lease_token;
@@ -116,10 +158,16 @@ async function observeJob(pool: Pool, original: WebsiteJob, observation: Website
         call.total_tokens, call.elapsed_ms, call.error_code ?? null]);
       if (!changed.rowCount) {
         if (!active) return terminalReason;
-        const previous = (await db.query('SELECT status,runner_token FROM website_model_calls WHERE job_id=$1 AND call_index=$2', [job.id, call.index])).rows[0];
+        const previous = (await db.query('SELECT status,runner_token,prompt_tokens,completion_tokens,total_tokens,elapsed_ms,error_code FROM website_model_calls WHERE job_id=$1 AND call_index=$2', [job.id, call.index])).rows[0];
+        if (!previous || previous.runner_token !== original.lease_token || previous.status === 'started') return 'AI_USAGE_INVALID';
+        // 相同终态观察可重复提交，但不重复写事件、扣量或误杀仍运行的任务。
+        const sameCount = (stored: string | null, observed: number | null) => stored === null ? observed === null : stored === String(observed);
+        if (call.status === previous.status && sameCount(previous.prompt_tokens, call.prompt_tokens) &&
+            sameCount(previous.completion_tokens, call.completion_tokens) && sameCount(previous.total_tokens, call.total_tokens) &&
+            sameCount(previous.elapsed_ms, call.elapsed_ms) && previous.error_code === (call.error_code ?? null)) return undefined;
         // completed 回调因取消而抛错后，ReAct 的 failed 回调不得覆盖已知账单。
-        if (call.status !== 'failed' || !previous || previous.runner_token !== original.lease_token || previous.status === 'started') return 'AI_USAGE_INVALID';
-        return undefined;
+        if (call.status === 'failed' && previous.status === 'completed') return undefined;
+        return 'AI_USAGE_INVALID';
       }
     }
     if (!active) return terminalReason;
@@ -130,9 +178,19 @@ async function observeJob(pool: Pool, original: WebsiteJob, observation: Website
       return reason;
     }
     if (call?.status === 'started') {
+      // 每次付费调用都复核，而不是仅依赖 I/O 前的检查；失败先提交终态，绝不创建假账单。
+      try { await sourcesCurrent(db, job, original, valid, job.remaining); }
+      catch (error) {
+        if (!(error instanceof ApiError)) throw error;
+        const reason = errorCode(error);
+        await failJob(db, job, reason);
+        return reason;
+      }
       const inserted = await db.query(`INSERT INTO website_model_calls(job_id,call_index,runner_token,status,elapsed_ms)
         VALUES($1,$2,$3,'started',$4) ON CONFLICT(job_id,call_index) DO NOTHING`, [job.id, call.index, original.lease_token, call.elapsed_ms]);
       if (!inserted.rowCount) return 'AI_USAGE_INVALID';
+      await startAiCall(db, { requestingUserId: original.requesting_user_id, restaurantId: original.restaurant_id,
+        websiteJobId: original.id, runnerToken: original.lease_token!, callIndex: call.index, model: config.website?.model ?? 'deepseek-flash' });
     }
     const progress = JSON.stringify(observation.progress), event = JSON.stringify({ ...observation.event, ...(call ? { model_call: call } : {}) });
     const draft = observation.draft === undefined ? null : JSON.stringify(observation.draft);
@@ -165,22 +223,109 @@ async function observeJob(pool: Pool, original: WebsiteJob, observation: Website
   });
   if (code) throw new ApiError(503, code);
 }
-type Result = { kind: 'chat'; reply: string; design_brief: string } | { kind: 'generate'; version: WebsiteVersion };
+type Result = { kind: 'chat'; reply: string; design_brief: string } | { kind: 'generate'; version: WebsiteVersion; raw: WebsiteRawSource };
 function validText(value: unknown, max: number, empty = false): value is string {
   return typeof value === 'string' && (empty || Boolean(value.trim())) && !value.includes('\0') && Array.from(value).length <= max;
 }
-async function perform(config: Config, job: WebsiteJob, client: WebsiteJobClient, observe?: (obs: WebsiteAgentObservation) => Promise<void>): Promise<Result> {
+async function singleModelCall<T extends { usage?: unknown }>(pool: Pool, config: Config, original: WebsiteJob,
+  invoke: (beforeSend: () => Promise<void>) => Promise<T>, supportsHook: boolean): Promise<T> {
+  let callStarted: number | undefined;
+  const identity = { requestingUserId: original.requesting_user_id, restaurantId: original.restaurant_id,
+    websiteJobId: original.id, runnerToken: original.lease_token!, callIndex: 1 };
+  const beforeSend = async () => {
+    if (callStarted !== undefined) return;
+    const code = await transaction(pool, async db => {
+      const valid = await lockWorkerContext(db, original);
+      const job = (await db.query<WebsiteJob & { remaining: number | null }>(`SELECT *,
+        extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
+        FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
+      if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id ||
+          job.status !== 'running' || job.lease_token !== original.lease_token) return 'JOB_INTERRUPTED';
+      if (!valid || job.remaining === null || job.remaining <= 0) {
+        const reason = !valid ? 'WEBSITE_CONTEXT_REVOKED' : 'JOB_INTERRUPTED';
+        await failJob(db, job, reason);
+        return reason;
+      }
+      if (job.kind === 'chat') {
+        const agent = (await db.query<{ revision: number; messages: WebsiteMessage[] }>(`SELECT revision,messages FROM website_agents
+          WHERE restaurant_id=$1 FOR UPDATE`, [job.restaurant_id])).rows[0];
+        if (!agent || agent.revision !== job.agent_revision || JSON.stringify(agent.messages.slice(-20)) !== JSON.stringify(job.input.messages)) {
+          await failJob(db, job, 'AGENT_CONTEXT_CHANGED');
+          return 'AGENT_CONTEXT_CHANGED';
+        }
+      } else {
+        try { await sourcesCurrent(db, job, original, valid, job.remaining); }
+        catch (error) {
+          if (!(error instanceof ApiError)) throw error;
+          const reason = errorCode(error);
+          await failJob(db, job, reason);
+          return reason;
+        }
+      }
+      await startAiCall(db, { ...identity, model: config.website?.model ?? 'deepseek-flash' });
+      if (job.kind === 'generate') {
+        const inserted = await db.query(`INSERT INTO website_model_calls(job_id,call_index,runner_token,status,elapsed_ms)
+          VALUES($1,1,$2,'started',0) ON CONFLICT(job_id,call_index) DO NOTHING`, [job.id, original.lease_token]);
+        if (!inserted.rowCount) throw new ApiError(503, 'AI_USAGE_INVALID');
+      }
+      return undefined;
+    });
+    if (code) throw new ApiError(503, code);
+    callStarted = Date.now();
+  };
+  const finishCall = async (status: 'completed' | 'failed', value: unknown, code?: string) => {
+    if (callStarted === undefined) return;
+    const usage = parseAiTokenUsage(value), elapsedMs = Math.max(0, Date.now() - callStarted);
+    await transaction(pool, async db => {
+      // 旧 007 UPDATE 的 trigger 也锁 job，先保持原锁序；权限结果不阻止已发生调用的结账。
+      await lockWorkerContext(db, original);
+      const job = (await db.query<WebsiteJob>('SELECT * FROM website_jobs WHERE id=$1 FOR UPDATE', [original.id])).rows[0];
+      await finishAiCall(db, { ...identity, status, usage, elapsedMs, ...(code ? { errorCode: code } : {}) });
+      if (original.kind === 'generate' && job?.restaurant_id === original.restaurant_id && job.requesting_user_id === original.requesting_user_id &&
+          (job.status === 'failed' || (job.status === 'running' && job.lease_token === original.lease_token))) {
+        // 007 不允许 completed + unknown；仅旧行使用 failed，010 保持真实 completed + unknown，不影响业务成功。
+        const legacyUnknown = status === 'completed' && usage === null;
+        await db.query(`UPDATE website_model_calls SET status=$3,prompt_tokens=$4,completion_tokens=$5,
+          total_tokens=$6,elapsed_ms=$7,error_code=$8,updated_at=clock_timestamp()
+          WHERE job_id=$1 AND call_index=1 AND runner_token=$2 AND status='started'`,
+        [original.id, original.lease_token, legacyUnknown ? 'failed' : status, usage?.prompt_tokens ?? null, usage?.completion_tokens ?? null,
+          usage?.total_tokens ?? null, elapsedMs, legacyUnknown ? 'AI_USAGE_UNAVAILABLE' : code ?? null]);
+      }
+    });
+  };
+  try {
+    // 只对不声明第四参数的旧注入 fixture 提前开始；真实 JSON provider 的本地失败不能生成调用行。
+    if (!supportsHook) await beforeSend();
+    const output = await invoke(beforeSend);
+    await finishCall('completed', output?.usage);
+    return output;
+  } catch (error) {
+    await finishCall('failed', (error as { usage?: unknown } | null)?.usage, errorCode(error));
+    throw error;
+  }
+}
+async function perform(pool: Pool, config: Config, job: WebsiteJob, client: WebsiteJobClient, observe?: (obs: WebsiteAgentObservation) => Promise<void>): Promise<Result> {
   requireWebsiteAI(config);
   if (job.kind === 'chat') {
-    const output = await client.chat(config, job.input.messages!.slice(-20), job.snapshot);
+    const output = await singleModelCall(pool, config, job,
+      beforeSend => client.chat(config, job.input.messages!.slice(-20), job.snapshot, beforeSend),
+      client.chat === callWebsiteAgent || client.chat.length >= 4);
     if (!validText(output?.reply, 2000) || !validText(output?.design_brief, 3000, true)) throw new ApiError(503, 'AI_RESPONSE_INVALID');
     return { kind: 'chat', reply: output.reply, design_brief: output.design_brief };
   }
-  // 旧单次生成仅服务于显式注入的历史 fixture；实际客户端始终执行 ReAct。
+  if (client.react === runWebsiteAgent && (config.website?.baseUrl !== 'https://api.deepseek.com' || config.website.model !== 'deepseek-flash')) {
+    throw new ApiError(503, 'AI_CONFIGURATION_INVALID');
+  }
+  if (websiteImageSourcesRequired(job) && !client.react) throw new ApiError(503, 'WEBSITE_IMAGE_SOURCE_UNAVAILABLE');
+  const images = (job.input as WebsiteImageJob['input']).image_vision_confirmed === true
+    ? await prepareJobImages(pool, config, job) : [];
+  // 旧单次生成仅服务于显式注入的历史 fixture；有视觉输入必须使用原生 ReAct，不能丢弃照片。
   const output = client.react
-    ? await client.react(config, job.input.brief!, job.snapshot, observe!)
-    : await client.generate(config, job.input.brief!, job.snapshot);
-  if (!validText(output?.summary, client.react ? 800 : 2000) || !validText(output?.model, 100) ||
+    ? await client.react(config, job.input.brief!, job.snapshot, observe!, undefined, undefined, images)
+    : await singleModelCall(pool, config, job,
+      beforeSend => client.generate(config, job.input.brief!, job.snapshot, beforeSend),
+      client.generate === generateWebsite || client.generate.length >= 4);
+  if (!validText(output?.summary, client.react ? 800 : 2000) || (output?.model !== null && !validText(output?.model, 100)) ||
       typeof output?.html_body !== 'string' || typeof output?.css !== 'string') throw new ApiError(503, 'AI_RESPONSE_INVALID');
   let rendered: ReturnType<typeof renderWebsite>;
   try {
@@ -200,16 +345,24 @@ async function perform(config: Config, job: WebsiteJob, client: WebsiteJobClient
     html: rendered.html, checksum: rendered.checksum, snapshot: job.snapshot, summary: output.summary,
     model: output.model, usage: output.usage, asset_ids: job.snapshot.assets.map(asset => asset.id), created_at: new Date() };
   verifyWebsiteVersion(version);
-  return { kind: 'generate', version };
+  return { kind: 'generate', version, raw: { html_body: output.html_body, css: output.css, summary: output.summary } };
 }
 async function finishJob(pool: Pool, original: WebsiteJob, result?: Result, failure?: string): Promise<void> {
   await transaction(pool, async db => {
     const valid = await lockWorkerContext(db, original);
-    const job = (await db.query<WebsiteJob & { expired: boolean }>(`SELECT *,lease_expires_at<=clock_timestamp() AS expired
+    const job = (await db.query<WebsiteJob & { expired: boolean; remaining: number | null }>(`SELECT *,lease_expires_at<=clock_timestamp() AS expired,
+      extract(epoch FROM lease_expires_at-clock_timestamp())::float8 AS remaining
       FROM website_jobs WHERE id=$1 FOR UPDATE`, [original.id])).rows[0];
-    if (!job || job.status !== 'running' || job.lease_token !== original.lease_token) return;
+    if (!job || job.restaurant_id !== original.restaurant_id || job.requesting_user_id !== original.requesting_user_id ||
+        job.status !== 'running' || job.lease_token !== original.lease_token) return;
     if (!valid || job.expired || failure) {
       await failJob(db, job, !valid ? 'WEBSITE_CONTEXT_REVOKED' : job.expired ? 'JOB_INTERRUPTED' : failure!);
+      return;
+    }
+    try { await sourcesCurrent(db, job, original, valid, job.remaining); }
+    catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      await failJob(db, job, errorCode(error));
       return;
     }
     let versionId: string | null = null;
@@ -226,13 +379,15 @@ async function finishJob(pool: Pool, original: WebsiteJob, result?: Result, fail
     } else if (result?.kind === 'generate') {
       const last = (await db.query('SELECT version_number FROM website_versions WHERE restaurant_id=$1 ORDER BY version_number DESC LIMIT 1', [job.restaurant_id])).rows[0];
       const number = (last?.version_number ?? 0) + 1;
-      if (number > 20) { await failJob(db, job, 'WEBSITE_VERSION_LIMIT'); return; }
-      const version = result.version;
+      if (number > 2147483647) { await failJob(db, job, 'WEBSITE_VERSION_LIMIT'); return; }
+      const version = { ...result.version, version_number: number };
       await db.query(`INSERT INTO website_versions(id,restaurant_id,version_number,summary,html,checksum,snapshot,asset_ids,model,usage)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [version.id, job.restaurant_id, number, version.summary,
         version.html, version.checksum, JSON.stringify(version.snapshot), version.asset_ids, version.model,
-        version.usage === undefined ? null : JSON.stringify(version.usage)]);
-      // 成功版本保留原 website_job 引用，永久保护版本所依赖的素材。
+        version.usage == null ? null : JSON.stringify(version.usage)]);
+      await insertWebsiteSource(db, version, result.raw, { origin: 'generation', jobId: job.id,
+        restaurantRevision: job.input.expected_restaurant_revision ?? 0, menuRevision: job.snapshot.menu?.revision ?? null });
+      // 保留旧任务引用，另加永久版本引用；原稿与任务成功终态由 deferred guard 在提交时联合核验。
       versionId = version.id;
     } else {
       await failJob(db, job, 'AI_RESPONSE_INVALID');
@@ -256,7 +411,7 @@ export async function runWebsiteJobs(pool: Pool, config: Config, client: Website
     const claimed = await claimJob(pool);
     if (!claimed.job) return claimed.consumed ? 1 : 0;
     let result: Result | undefined, failure: string | undefined;
-    try { result = await perform(config, claimed.job, client, observation => observeJob(pool, claimed.job!, observation)); }
+    try { result = await perform(pool, config, structuredClone(claimed.job), client, observation => observeJob(pool, config, claimed.job!, observation)); }
     catch (error) { failure = errorCode(error); }
     await finishJob(pool, claimed.job, result, failure);
     return 1;

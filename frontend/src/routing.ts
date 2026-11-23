@@ -1,11 +1,13 @@
-export type Page = 'home' | 'login' | 'register' | 'forgot' | 'resend' | 'verify' | 'reset' | 'sessions' | 'terms' | 'privacy' | 'not-found';
+export type Page = 'home' | 'examples' | 'app' | 'login' | 'register' | 'forgot' | 'resend' | 'verify' | 'reset' | 'sessions' | 'usage' | 'pricing' | 'billing' | 'terms' | 'privacy' | 'not-found';
 export interface RouteState { page: Page; path: string; token: string | null }
 
 export function readRoute(): RouteState {
   const path = window.location.pathname;
   const pages: Record<string, Page> = {
-    '/': 'home', '/auth/login': 'login', '/auth/register': 'register',
-    '/auth/forgot': 'forgot', '/auth/resend': 'resend', '/auth/verify': 'verify', '/auth/reset': 'reset', '/account/sessions': 'sessions',
+    '/': 'home', '/examples': 'examples', '/pricing': 'pricing', '/account/billing': 'billing', '/app': 'app', '/app/restaurants': 'app',
+    '/app/reservations': 'app', '/app/analytics': 'app',
+    '/auth/login': 'login', '/auth/register': 'register',
+    '/auth/forgot': 'forgot', '/auth/resend': 'resend', '/auth/verify': 'verify', '/auth/reset': 'reset', '/account/sessions': 'sessions', '/account/usage': 'usage',
   };
   const page = pages[path] ?? (path.startsWith('/legal/privacy') ? 'privacy' : path.startsWith('/legal/terms') ? 'terms' : 'not-found');
   let token: string | null = null;

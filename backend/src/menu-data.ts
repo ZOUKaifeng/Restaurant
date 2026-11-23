@@ -1,11 +1,12 @@
 import { ApiError } from './errors.js';
+import type { AiTokenUsage } from './ai-usage-types.js';
 
 export interface MenuItemData { name: string; description: string | null; price_text: string | null; review_note: string | null }
 export interface MenuCategoryData { name: string; items: MenuItemData[] }
 export interface MenuData { categories: MenuCategoryData[]; warnings: string[] }
 export interface ConfirmedMenuSnapshot { revision: number; data: MenuData }
 export interface MenuImageInput { bytes: Buffer; mime_type: 'image/jpeg' | 'image/png' }
-export interface MenuRecognitionOutput { data: MenuData; model: string; usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } }
+export interface MenuRecognitionOutput { data: MenuData; model: string; usage: AiTokenUsage | null }
 
 export function normalizeMenuData(value: unknown, modelOutput = false): MenuData {
   const fail = (): never => { throw new ApiError(modelOutput ? 503 : 422, modelOutput ? 'AI_OUTPUT_INVALID' : 'MENU_DATA_INVALID'); };
