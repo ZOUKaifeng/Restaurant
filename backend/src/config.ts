@@ -16,8 +16,9 @@ export interface Config {
   storageLocalRoot: string;
   s3?: { region: string; bucket: string; endpoint?: string; forcePathStyle: boolean };
   website?: { apiKey?: string; baseUrl: string; model: string; publicOrigin: string; port: number; host: string; baseDomain?: string };
-  emailMode: 'disabled' | 'smtp';
+  emailMode: 'disabled' | 'smtp' | 'postmark';
   smtp?: { host: string; port: number; secure: boolean; user: string; pass: string; from: string };
+  postmark?: { serverToken: string; from: string };
 }
 
 function parseConfigUrl(value: string, key: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL' | 'APP_ORIGIN' | 'S3_ENDPOINT' | 'SITE_PUBLIC_ORIGIN'): URL {
@@ -51,13 +52,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (Buffer.byteLength(tokenPepper) < 32 || Buffer.byteLength(cursorSecret) < 32) throw new Error('TOKEN_PEPPER/CURSOR_SECRET 至少32字节');
   if (!/^[a-fA-F0-9]{64}$/.test(outboxEncryptionKey)) throw new Error('OUTBOX_ENCRYPTION_KEY 必须64位hex');
   const emailMode = env.EMAIL_MODE ?? (nodeEnv === 'production' ? 'smtp' : 'disabled');
-  if (!['disabled', 'smtp'].includes(emailMode) || (nodeEnv === 'production' && emailMode !== 'smtp')) throw new Error('无效配置 EMAIL_MODE');
-  let smtp: Config['smtp'];
+  if (!['disabled', 'smtp', 'postmark'].includes(emailMode) || (nodeEnv === 'production' && emailMode === 'disabled')) throw new Error('无效配置 EMAIL_MODE');
+  let smtp: Config['smtp'], postmark: Config['postmark'];
   if (emailMode === 'smtp') {
     const secure = env.SMTP_SECURE ?? 'true';
     if (!['true', 'false'].includes(secure)) throw new Error('无效配置 SMTP_SECURE');
     smtp = { host: required('SMTP_HOST'), port: number('SMTP_PORT', 465), secure: secure === 'true', user: required('SMTP_USER'), pass: required('SMTP_PASS'), from: required('SMTP_FROM') };
     if (/[\r\n]/.test(smtp.from) || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(smtp.from)) throw new Error('无效配置 SMTP_FROM');
+  } else if (emailMode === 'postmark') {
+    const serverToken = required('POSTMARK_SERVER_TOKEN'), from = required('SMTP_FROM');
+    if (!/^[\x21-\x7e]{1,512}$/.test(serverToken) || /^(POSTMARK_API_TEST|CHANGE_ME)$/i.test(serverToken)) throw new Error('无效配置 POSTMARK_SERVER_TOKEN');
+    if (from.length > 254 || !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(from)) throw new Error('无效配置 SMTP_FROM');
+    postmark = { serverToken, from };
   }
   const storageMode = env.STORAGE_MODE ?? (nodeEnv === 'production' ? 's3' : 'local');
   if (!['local', 's3'].includes(storageMode) || (nodeEnv === 'production' && storageMode !== 's3')) throw new Error('生产素材必须配置 S3，不能回退本地存储');
@@ -89,7 +95,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (nodeEnv !== 'production' && (!['localhost', '127.0.0.1'].includes(publicAddress.hostname) || publicAddress.protocol !== 'http:' || Number(publicAddress.port) !== sitePort)) throw new Error('本轮本地站点只允许独立端口的回环 HTTP 地址');
   if (nodeEnv === 'production' && publicAddress.protocol !== 'https:') throw new Error('正式站点必须配置 HTTPS origin，公网发布尚未验收');
   const website = { apiKey: env.DEEPSEEK_API_KEY, baseUrl, model, publicOrigin, port: sitePort, host: '127.0.0.1', baseDomain: env.SITE_BASE_DOMAIN };
-  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, website, emailMode: emailMode as Config['emailMode'], smtp };
+  return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, website, emailMode: emailMode as Config['emailMode'], smtp, postmark };
 }
 
 export function validateDatabaseUrl(value: string, key: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL' = 'DATABASE_URL'): void {

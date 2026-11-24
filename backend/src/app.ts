@@ -23,7 +23,7 @@ export function createApp({ pool, config }: { pool: Pool; config: Config }) {
     trustProxy: false, requestIdHeader: false, genReqId: () => randomUUID(),
     logger: config.nodeEnv === 'test' ? false : {
       level: 'info',
-      redact: { paths: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]', 'password', 'token', 'DATABASE_URL', 'MIGRATION_DATABASE_URL', 'TOKEN_PEPPER', 'CURSOR_SECRET', 'OUTBOX_ENCRYPTION_KEY', 'SMTP_PASS', 'DEEPSEEK_API_KEY'], censor: '[已脱敏]' },
+      redact: { paths: ['req.headers.cookie', 'req.headers.authorization', 'req.headers["x-csrf-token"]', 'res.headers["set-cookie"]', 'password', 'token', 'DATABASE_URL', 'MIGRATION_DATABASE_URL', 'TOKEN_PEPPER', 'CURSOR_SECRET', 'OUTBOX_ENCRYPTION_KEY', 'SMTP_PASS', 'POSTMARK_SERVER_TOKEN', 'DEEPSEEK_API_KEY'], censor: '[已脱敏]' },
       serializers: { req: req => ({ method: req.method, id: req.id }), res: res => ({ statusCode: res.statusCode }) },
     },
   });

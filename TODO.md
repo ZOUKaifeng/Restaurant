@@ -21,7 +21,7 @@
 - [ ] Linux镜像实际构建/启动及GitHub远程CI通过，补充实际结果；本轮文档不新增测试计数或代勾运行验收。
 - [ ] Railway控制台部署Frontend/Backend/Mail并确认均常驻、不睡眠：按README配置根目录、Dockerfile、Build/Start覆盖项、私网上游及端口；Frontend `/healthz`、Backend `/api/v1/health/ready`，Mail不配置HTTP健康检查。实际Frontend HTTPS作为 `APP_ORIGIN`；使用 `DATABASE_SSL_CA` 内联PEM、不同时设置 `DATABASE_SSL_CA_FILE`，启动不自动迁移，应用不用超级用户角色。
 - [ ] 开放真实流量前复核当前 `trustProxy=false` 的代理地址聚合限流、受信代理范围与客户端IP；验收前后端独立更新的接口兼容和正常回滚，不直接信任任意转发头。
-- [ ] 实际测试前完成认证邮件链接配置；Mail与Backend共用生产TOKEN加密密钥/CA/数据库/SMTP，验收真实SMTP注册、验证、找回与订位通知、送达/失败证据，不把排队或SMTP接受当作已送达。
+- [ ] 实际测试前完成认证邮件链接配置；Mail与Backend共用生产TOKEN加密密钥/CA/数据库；Railway Trial改用Postmark HTTPS（`EMAIL_MODE=postmark`＋私有Server Token＋沿用SMTP_FROM发件地址）。验收真实注册、验证、找回与订位通知、送达/失败证据，不把排队或提供方接受当作已送达。
 - [ ] 真实S3私有存储权限、读写/删除/故障及恢复验收；方案接受或适配代码不等于云端交付完成。
 - [ ] sites仍保持生产禁用；`SITE_PUBLIC_ORIGIN=https://sites.tablefolk.work` 只是未配置、未上线的期望值，完成sites部署、正式域名/DNS/SSL及发布/正常回滚验收后再开放。
 

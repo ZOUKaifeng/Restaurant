@@ -6,6 +6,8 @@ import type { Pool } from 'pg';
 import { loadConfig, type Config } from './config.js';
 import { assertAppDatabase, createPool, transaction } from './db.js';
 import { secret } from './security.js';
+import { sendPostmarkMail, PostmarkMailError } from './postmark-mail.js';
+import { startupFailureLine, type StartupStage } from './startup-diagnostics.js';
 
 function decrypt(config: Config, outboxId: string, value: string): string {
   const [version, iv, tag, ciphertext] = value.split('.');
@@ -17,11 +19,11 @@ function decrypt(config: Config, outboxId: string, value: string): string {
   if (typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token)) throw new Error('邮件动作材料无效');
   return data.token;
 }
-export async function runMailBatch(pool: Pool, config: Config): Promise<'disabled' | 'idle' | 'accepted' | 'failed'> {
+export async function runMailBatch(pool: Pool, config: Config, postmarkFetch?: typeof fetch): Promise<'disabled' | 'idle' | 'accepted' | 'failed'> {
   await pool.query(`UPDATE email_outbox SET sensitive_payload_ciphertext=NULL,
     status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,updated_at=now()
     WHERE sensitive_payload_ciphertext IS NOT NULL AND sensitive_payload_expires_at<=now()`);
-  // 租约过期表示进程可能已提交 SMTP DATA，绝不直接重新排队。
+  // 租约过期表示进程可能已提交 SMTP DATA 或 HTTPS 请求，绝不直接重新排队。
   await pool.query(`UPDATE email_outbox SET status='failed',last_error_code='DELIVERY_UNKNOWN',lease_token=NULL,
     lease_expires_at=NULL,updated_at=now() WHERE status='sending' AND lease_expires_at<=now()`);
   await pool.query(`UPDATE email_outbox o SET status='cancelled',sensitive_payload_ciphertext=NULL,updated_at=now()
@@ -29,7 +31,8 @@ export async function runMailBatch(pool: Pool, config: Config): Promise<'disable
     AND (t.used_at IS NOT NULL OR t.revoked_at IS NOT NULL OR t.expires_at<=now()
       OR u.email_normalized<>t.target_email_normalized OR u.status NOT IN ('active','pending_verification'))`);
   if (config.emailMode === 'disabled') return 'disabled';
-  if (!config.smtp) throw new Error('缺少 SMTP 配置');
+  if (config.emailMode === 'smtp' && !config.smtp) throw new Error('缺少 SMTP 配置');
+  if (config.emailMode === 'postmark' && !config.postmark) throw new Error('缺少配置 POSTMARK_SERVER_TOKEN');
   const lease = secret();
   const task = await transaction(pool, async db => {
     const result = await db.query(`WITH candidate AS (
@@ -45,11 +48,8 @@ export async function runMailBatch(pool: Pool, config: Config): Promise<'disable
     return result.rows[0];
   });
   if (!task) return 'idle';
-  const smtp = config.smtp;
-  const transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.secure,
-    requireTLS: !smtp.secure, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10000, greetingTimeout: 10000,
-    socketTimeout: 20000, logger: false, debug: false, disableFileAccess: true, disableUrlAccess: true });
-  let submitted = false;
+  let transport: ReturnType<typeof nodemailer.createTransport> | undefined;
+  let submitted = false, providerAccepted = false;
   try {
     const token = task.sensitive_payload_ciphertext ? decrypt(config, task.id, task.sensitive_payload_ciphertext) : null;
     const reservationTemplates = ['reservation_received','reservation_confirmed','reservation_declined','reservation_cancelled'];
@@ -77,28 +77,49 @@ export async function runMailBatch(pool: Pool, config: Config): Promise<'disable
       subject = verifying ? '验证餐厅商家邮箱' : '重置餐厅商家密码';
       text = `${verifying ? '请打开链接并主动确认邮箱验证。' : '请打开链接设置新密码。'}\n${url.href}\n如非本人请求，请忽略此邮件。`;
     }
-    submitted = true;
-    const info = await transport.sendMail({ from: smtp.from, to: task.recipient_email,
-      messageId: `<${task.id}@${new URL(config.appOrigin).hostname}>`, subject, text,
-    });
-    if (!info.accepted?.length || info.rejected?.length) throw new Error('SMTP 未接受收件人');
-    await pool.query(`UPDATE email_outbox SET status='accepted',accepted_at=now(),provider_message_id=$1,
+    const messageId = `<${task.id}@${new URL(config.appOrigin).hostname}>`;
+    let providerMessageId: string;
+    if (config.emailMode === 'postmark') {
+      submitted = true;
+      const info = await sendPostmarkMail(config.postmark!, { to: task.recipient_email, subject, text, messageId }, postmarkFetch);
+      providerMessageId = info.messageId;
+    } else {
+      const smtp = config.smtp!;
+      transport = nodemailer.createTransport({ host: smtp.host, port: smtp.port, secure: smtp.secure,
+        requireTLS: !smtp.secure, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10000, greetingTimeout: 10000,
+        socketTimeout: 20000, logger: false, debug: false, disableFileAccess: true, disableUrlAccess: true });
+      submitted = true;
+      const info = await transport.sendMail({ from: smtp.from, to: task.recipient_email, messageId, subject, text });
+      if (!info.accepted?.length || info.rejected?.length) throw new Error('SMTP 未接受收件人');
+      providerMessageId = info.messageId;
+    }
+    providerAccepted = true;
+    const saved = await pool.query(`UPDATE email_outbox SET status='accepted',accepted_at=now(),provider_message_id=$1,
       sensitive_payload_ciphertext=NULL,lease_token=NULL,lease_expires_at=NULL,last_error_code=NULL,updated_at=now()
-      WHERE id=$2 AND lease_token=$3 AND status='sending'`, [info.messageId, task.id, lease]);
+      WHERE id=$2 AND lease_token=$3 AND status='sending'`, [providerMessageId, task.id, lease]);
+    if (saved.rowCount !== 1) throw new Error('邮件接受回执未保存；结果未知');
     return 'accepted';
-  } catch {
+  } catch (error) {
+    const code = !submitted ? 'INVALID_ENCRYPTED_PAYLOAD' :
+      !providerAccepted && error instanceof PostmarkMailError ? error.code : 'DELIVERY_UNKNOWN';
     await pool.query(`UPDATE email_outbox SET status='failed',last_error_code=$1,lease_token=NULL,lease_expires_at=NULL,
-      updated_at=now() WHERE id=$2 AND lease_token=$3 AND status='sending'`, [submitted ? 'DELIVERY_UNKNOWN' : 'INVALID_ENCRYPTED_PAYLOAD', task.id, lease]);
+      updated_at=now() WHERE id=$2 AND lease_token=$3 AND status='sending'`, [code, task.id, lease]);
+    if (config.nodeEnv !== 'test') process.stderr.write(`邮件任务失败 [${code}]；未自动重发\n`);
     return 'failed';
-  } finally { transport.close(); }
+  } finally { transport?.close(); }
 }
+let startupStage: StartupStage = 'CONFIG';
 async function main(): Promise<void> {
-  const config = loadConfig(), pool = createPool(config.databaseUrl);
+  const config = loadConfig();
+  startupStage = 'DATABASE_CONFIG';
+  const pool = createPool(config.databaseUrl);
   const controller = new AbortController();
   process.once('SIGINT', () => controller.abort());
   process.once('SIGTERM', () => controller.abort());
   try {
+    startupStage = 'DATABASE_READY';
     await assertAppDatabase(pool);
+    process.stdout.write(`邮件进程就绪 [${config.emailMode}]；accepted不代表送达\n`);
     do {
       const result = await runMailBatch(pool, config);
       if (process.argv.includes('--once')) { process.stdout.write(`邮件任务状态：${result}（accepted 不代表送达）\n`); break; }
@@ -106,4 +127,4 @@ async function main(): Promise<void> {
     } while (!controller.signal.aborted);
   } finally { await pool.end(); }
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { process.stderr.write('邮件 worker 失败，请核查脱敏任务状态\n'); process.exitCode = 1; });
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(error => { process.stderr.write(startupFailureLine(startupStage, error).replace('后端启动失败', '邮件进程启动失败')); process.exitCode = 1; });

@@ -21,13 +21,25 @@ AI 餐厅建站与订桌平台。
 - **提交范围：**源码、依赖清单/锁文件、迁移、部署配置及本次文档；排除私有配置、凭据、Demo和临时文件。现有未跟踪 `outputs/` 报告即使标称脱敏也不新增提交，避免公开真实用量、账号元数据或演示链接；基线已跟踪报告保持原样。唯一允许新增的报告见本节末尾，由主任务创建。
 - **Frontend：**Railway Root Directory设为仓库根 `/`，Docker构建上下文也为仓库根（前端依赖后端类型）；设置 `RAILWAY_DOCKERFILE_PATH=frontend/Dockerfile`，清空 Build Command / Start Command 覆盖项。运行时设 `BACKEND_UPSTREAM=${{backend.RAILWAY_PRIVATE_DOMAIN}}:4000`、`PORT=8080`，健康检查 `/healthz`；私网地址和凭据不放进 `VITE_*` 浏览器构建变量。
 - **Backend：**Root Directory设为 `/backend`，自动识别该目录的 `Dockerfile`；清除遗留 Railpack Build Command，Start Command留空采用镜像默认，或使用 `npm start`。设置 `HOST=::`、`PORT=4000`，健康检查 `/api/v1/health/ready`。
-- **Mail worker：**同样使用 `/backend` 根目录及其Dockerfile，Start Command改为 `npm run mail:start`；与Backend共用 `TOKEN_PEPPER`、`CURSOR_SECRET`、`OUTBOX_ENCRYPTION_KEY`、数据库CA/应用账号及真实SMTP配置。worker无HTTP服务，不配置HTTP健康检查；Frontend、Backend、Mail均须常驻，关闭睡眠。
+- **Mail worker：**同样使用 `/backend` 根目录及其Dockerfile，Start Command改为 `npm run mail:start`；与Backend共用 `TOKEN_PEPPER`、`CURSOR_SECRET`、`OUTBOX_ENCRYPTION_KEY`、数据库CA/应用账号及邮件发送配置（Railway Trial用下方Postmark HTTPS）。worker无HTTP服务，不配置HTTP健康检查；Frontend、Backend、Mail均须常驻，关闭睡眠。
 - **生产配置：**`APP_ORIGIN` 必须是实际Frontend的HTTPS Origin，不是Backend地址或示例地址；认证邮件链接配置完成后才能实际测试。数据库CA采用 `DATABASE_SSL_CA` 内联PEM，不同时配置 `DATABASE_SSL_CA_FILE`。服务启动不自动迁移；迁移另用独立受控角色，应用不得使用超级用户角色。
 - **公开站点：**`SITE_PUBLIC_ORIGIN` 的期望值为 `https://sites.tablefolk.work`，尚未配置、未上线；sites仍在生产环境禁用，不能将期望域名当作现有可用网址。
 - **上线门禁：**当前 `trustProxy=false`，代理后的客户端限流可能聚合到代理地址；开放真实流量前必须完成受信代理范围与客户端IP/限流复核，不能直接信任任意转发头。云端邮件、对象存储方案仅已接受，尚未交付或实测；Frontend与Backend可独立更新，但须核验接口兼容及正常回滚。
 - **CI与配置方式：**GitHub CI增加检查及前后端Docker构建，不执行Railway部署、不注入生产密钥；Linux镜像和远程CI结果仍待主任务补记。按当前官方说明，Config as Code的legacy配置已弃用，过渡期至2026-12-01；本候选选择Docker＋控制台最小配置，不新增legacy TOML文件。
 
 发布分支交付记录：[Railway发布分支交付](outputs/Table-Folk-Railway发布分支交付-2026-11-23.html)（不包含生产凭据或真实账号用量快照）。
+
+## Postmark HTTPS事务邮件（2026-11-24）
+
+Railway官方限制：Free/Trial/Hobby不允许SMTP出站。保留同一Postmark账号、已验证域名、邮件队列及模板，选择 `EMAIL_MODE=postmark` 通过固定 `https://api.postmarkapp.com/email` 发信，不是更改SMTP端口。
+
+- **mail变量：**`EMAIL_MODE=postmark`、`POSTMARK_SERVER_TOKEN`为该Postmark Server的私有API Token（非SMTP Access/Secret、非Account Token、非POSTMARK_API_TEST），`SMTP_FROM`仍为已验证域名发件地址。沿用 `SMTP_FROM` 是配置兼容，HTTPS模式不使用SMTP_HOST/PORT/USER/PASS。
+- **其他引用不变：**mail继续引用backend的应用DB、CA、APP_ORIGIN、TOKEN_PEPPER、CURSOR_SECRET、OUTBOX_ENCRYPTION_KEY、当前共用配置所需S3元数据与SITE_PUBLIC_ORIGIN；不重新生成密钥，不复制数据库owner/管理员连接或模型/存储秘密。
+- **上线顺序：**先从最新发布提交重建mail，保留backend现有smtp配置也可运行，因为它仅入队。mail就绪日志应为 `[postmark]`。如统一修改backend为postmark，它也必须配置Server Token；不要只把共享EMAIL_MODE改掉但遗漏凭据。
+- **发送保护：**每个任务只调用一次HTTPS接口，不跟随重定向、不回退SMTP、不盲目重试；20秒总超时、响应16KiB上限，只有HTTP200＋ErrorCode=0＋有效MessageID才记accepted。accepted只是提供方接受，不等于实际收件箱送达。验证链接不启用点击/打开跟踪。
+- **失败排查：**固定 `POSTMARK_AUTH_REJECTED`、`POSTMARK_ACCOUNT_NOT_APPROVED`、`POSTMARK_RECIPIENT_INACTIVE`、`POSTMARK_STREAM_REJECTED`、`POSTMARK_REQUEST_REJECTED`、`POSTMARK_RATE_LIMITED` 供查状态；不输出个人邮箱/密码/完整供应商响应。网络超时、失联或成功后落库失败仍为 `DELIVERY_UNKNOWN`，不会自动重排。
+- **真实验收：**旧SMTP失败记录保留。配置新通道后，用户正常“重发验证邮件”一次创建新令牌并撤销旧令牌，不重新注册，不改数据库旧任务为queued；确认Postmark Activity/收件箱/链接验证与登录实际成功。发信权限、额度及域名验证仍需Postmark批准，不绕过抑制名单。
+- **当前边界：**本轮代码切换不等于已部署、已经提供私有Server Token、真实邮件已送达或全部生产验收完成；main保持不合并，自动部署关闭。
 
 ## Supabase数据库托管（2026-11-19）
 

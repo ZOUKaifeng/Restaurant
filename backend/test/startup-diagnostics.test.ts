@@ -108,6 +108,21 @@ test('错误属性只读取一次，变值getter及原型属性不能绕过代�
   }
 });
 
+test('Postmark配置仅需Server token和发信地址，不要求SMTP凭据且缺失错误脱敏', () => {
+  const httpsEnv = { ...env, EMAIL_MODE: 'postmark', POSTMARK_SERVER_TOKEN: syntheticSecret,
+    SMTP_HOST: undefined, SMTP_USER: undefined, SMTP_PASS: undefined, SMTP_PORT: undefined };
+  const config = loadConfig(httpsEnv);
+  assert.equal(config.emailMode, 'postmark');
+  assert.equal(config.smtp, undefined);
+  assert.deepEqual(config.postmark, { serverToken: syntheticSecret, from: 'noreply@example.test' });
+  for (const token of [undefined, '', 'POSTMARK_API_TEST', 'CHANGE_ME', 'postmark_api_test', 'cHaNgE_Me', `${syntheticSecret}\n`, 'x'.repeat(513)]) {
+    const line = startupFailureLine('CONFIG', configError({ ...httpsEnv, POSTMARK_SERVER_TOKEN: token }));
+    assert.match(line, /POSTMARK_SERVER_TOKEN/);
+    assertPrivate(line);
+  }
+  assertPrivate(startupFailureLine('CONFIG', configError({ ...httpsEnv, SMTP_FROM: 'name <a@example.test>' })));
+});
+
 function failingStartup(changes: NodeJS.ProcessEnv): string {
   const source = 'import pg from "pg"; pg.Client.prototype.connect = function () { process.stderr.write("UNEXPECTED_DB_CONNECTION\\n"); process.exit(73); }; await import("./src/index.ts");';
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', source], {
