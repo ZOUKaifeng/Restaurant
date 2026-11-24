@@ -20,6 +20,11 @@ export interface Config {
   smtp?: { host: string; port: number; secure: boolean; user: string; pass: string; from: string };
 }
 
+function parseConfigUrl(value: string, key: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL' | 'APP_ORIGIN' | 'S3_ENDPOINT' | 'SITE_PUBLIC_ORIGIN'): URL {
+  try { return new URL(value); }
+  catch { throw new Error(`无效配置 ${key}`); }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const required = (key: string): string => {
     const value = env[key];
@@ -35,9 +40,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!['development', 'test', 'production'].includes(nodeEnv)) throw new Error('无效配置 NODE_ENV');
   const databaseUrl = required('DATABASE_URL');
   validateDatabaseUrl(databaseUrl);
-  if (env.MIGRATION_DATABASE_URL) validateDatabaseUrl(env.MIGRATION_DATABASE_URL);
+  if (env.MIGRATION_DATABASE_URL) validateDatabaseUrl(env.MIGRATION_DATABASE_URL, 'MIGRATION_DATABASE_URL');
   const origin = required('APP_ORIGIN');
-  const parsed = new URL(origin);
+  const parsed = parseConfigUrl(origin, 'APP_ORIGIN');
   if (!['https:', 'http:'].includes(parsed.protocol) || parsed.origin !== origin || parsed.username || parsed.password) throw new Error('APP_ORIGIN 必须为精确 origin');
   if (nodeEnv === 'production' && parsed.protocol !== 'https:') throw new Error('生产 APP_ORIGIN 必须 HTTPS');
   const tokenPepper = required('TOKEN_PEPPER');
@@ -64,7 +69,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket) || !/^[a-z0-9-]{3,64}$/.test(region)) throw new Error('无效 S3 配置');
     const endpoint = env.S3_ENDPOINT;
     if (endpoint) {
-      const address = new URL(endpoint);
+      const address = parseConfigUrl(endpoint, 'S3_ENDPOINT');
       const localDevelopment = nodeEnv !== 'production' && address.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(address.hostname);
       if ((address.protocol !== 'https:' && !localDevelopment) || address.username || address.password || address.search || address.hash) throw new Error('无效 S3 endpoint');
     }
@@ -78,7 +83,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (model !== 'deepseek-flash') throw new Error('本轮指定 DeepSeek V4.1 Flash，model 必须 deepseek-flash');
   const sitePort = number('SITE_PORT', 4174);
   const publicOrigin = env.SITE_PUBLIC_ORIGIN ?? `http://localhost:${sitePort}`;
-  const publicAddress = new URL(publicOrigin);
+  const publicAddress = parseConfigUrl(publicOrigin, 'SITE_PUBLIC_ORIGIN');
   if (publicAddress.origin !== publicOrigin || publicAddress.username || publicAddress.password || publicOrigin === origin ||
       !['http:', 'https:'].includes(publicAddress.protocol)) throw new Error('SITE_PUBLIC_ORIGIN 必须为独立站点 origin');
   if (nodeEnv !== 'production' && (!['localhost', '127.0.0.1'].includes(publicAddress.hostname) || publicAddress.protocol !== 'http:' || Number(publicAddress.port) !== sitePort)) throw new Error('本轮本地站点只允许独立端口的回环 HTTP 地址');
@@ -87,7 +92,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return { nodeEnv: nodeEnv as Config['nodeEnv'], databaseUrl, migrationDatabaseUrl: env.MIGRATION_DATABASE_URL, appOrigin: origin, host: env.HOST ?? '127.0.0.1', port: number('PORT', 4000), tokenPepper, cursorSecret, outboxEncryptionKey, storageMode: storageMode as Config['storageMode'], storageLocalRoot, s3, website, emailMode: emailMode as Config['emailMode'], smtp };
 }
 
-export function validateDatabaseUrl(value: string): void {
-  const url = new URL(value);
+export function validateDatabaseUrl(value: string, key: 'DATABASE_URL' | 'MIGRATION_DATABASE_URL' = 'DATABASE_URL'): void {
+  const url = parseConfigUrl(value, key);
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || !url.hostname || !url.username || url.pathname.length < 2) throw new Error('无效 PostgreSQL URL');
 }

@@ -4,10 +4,15 @@ import { createApp } from './app.js';
 import { runWebsiteJobs } from './website-worker.js';
 import { runMenuJobs } from './menu-worker.js';
 import { closeInterruptedAiCalls } from './ai-metering.js';
+import { startupFailureLine, type StartupStage } from './startup-diagnostics.js';
+
+let startupStage: StartupStage = 'CONFIG';
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  startupStage = 'DATABASE_CONFIG';
   const pool = createPool(config.databaseUrl);
+  startupStage = 'APP_SETUP';
   const app = createApp({ pool, config });
   let stopping = false;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -32,6 +37,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
   try {
+    startupStage = 'DATABASE_READY';
     await assertAppDatabase(pool);
     await pool.query('SELECT id FROM website_jobs LIMIT 0');
     await pool.query('SELECT id FROM menu_jobs LIMIT 0');
@@ -41,14 +47,15 @@ async function main(): Promise<void> {
     await pool.query('SELECT id FROM billing_subscriptions LIMIT 0');
     await pool.query('SELECT version_id FROM website_version_sources LIMIT 0');
     await pool.query('SELECT id FROM website_content_actions LIMIT 0');
+    startupStage = 'LISTEN';
     await app.listen({ host: config.host, port: config.port });
     timer = setInterval(work, 1500);
     timer.unref();
     work();
-  } catch {
-    process.stderr.write('配置、数据库或监听失败；拒绝启动\n');
+  } catch (error) {
+    process.stderr.write(startupFailureLine(startupStage, error));
     await shutdown();
     process.exitCode = 1;
   }
 }
-main().catch(() => { process.stderr.write('后端配置无效；拒绝启动\n'); process.exitCode = 1; });
+main().catch(error => { process.stderr.write(startupFailureLine(startupStage, error)); process.exitCode = 1; });
