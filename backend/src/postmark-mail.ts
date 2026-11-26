@@ -9,6 +9,7 @@ export type PostmarkMessage = {
   to: string;
   subject: string;
   text: string;
+  html?: string;
   messageId: string;
 };
 
@@ -49,6 +50,7 @@ function validate(settings: PostmarkMailSettings, message: PostmarkMessage): voi
       typeof message.subject !== 'string' || message.subject.length > 2000 ||
       /[\r\n]/.test(message.subject) ||
       typeof message.text !== 'string' || Buffer.byteLength(message.text, 'utf8') > 1024 * 1024 ||
+      (message.html !== undefined && (typeof message.html !== 'string' || message.html.length === 0 || Buffer.byteLength(message.html, 'utf8') > 1024 * 1024)) ||
       typeof message.messageId !== 'string' || message.messageId.length > 128 ||
       !/^<[A-Za-z0-9._+-]+@[A-Za-z0-9.-]+>$/.test(message.messageId) ||
       !isMailbox(message.messageId.slice(1, -1))) {
@@ -79,6 +81,7 @@ export async function sendPostmarkMail(
     To: message.to,
     Subject: message.subject,
     TextBody: message.text,
+    ...(message.html !== undefined ? { HtmlBody: message.html } : {}),
     Headers: [{ Name: 'Message-ID', Value: message.messageId }],
     MessageStream: 'outbound',
     TrackOpens: false,

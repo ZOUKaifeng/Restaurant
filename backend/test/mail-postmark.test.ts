@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { loadConfig, type Config } from '../src/config.js';
 import { assertAppDatabase, id } from '../src/db.js';
 import { runMailBatch } from '../src/mail-worker.js';
+import { renderAccountMail } from '../src/mail-templates.js';
 import { digest, encryptAction, FLOW_COOKIE, secret } from '../src/security.js';
 import { migrate } from '../scripts/migrate.js';
 import { createTestDatabasePools, readTestDatabaseScope } from './database-scope.js';
@@ -81,11 +82,17 @@ function assertRequest(fake: ReturnType<typeof mockedFetch>, row: Outbox, subjec
   const body = JSON.parse(String(init.body));
   assert.deepEqual(body, {
     From: from, To: row.recipient_email, Subject: subject ?? body.Subject, TextBody: text ?? body.TextBody,
+    ...(['verify_email', 'reset_password'].includes(row.template_key) ? { HtmlBody: body.HtmlBody } : {}),
     Headers: [{ Name: 'Message-ID', Value: `<${row.id}@localhost>` }],
     MessageStream: 'outbound', TrackOpens: false, TrackLinks: 'None',
   });
   assert.equal(String(init.body).includes(serverToken), false, '供应商令牌不得进入邮件正文');
-  return body as { From: string; To: string; Subject: string; TextBody: string };
+  if (['verify_email', 'reset_password'].includes(row.template_key)) {
+    assert.equal(typeof body.HtmlBody, 'string');
+    assert.match(body.HtmlBody, /<html lang="en">/);
+    assert.match(body.HtmlBody, /Table Folk/);
+  }
+  return body as { From: string; To: string; Subject: string; TextBody: string; HtmlBody?: string };
 }
 async function outbox(outboxId: string): Promise<Outbox> {
   const result = await owner.query<Outbox>('SELECT * FROM email_outbox WHERE id=$1', [outboxId]);
@@ -256,8 +263,11 @@ describe('Postmark 邮件队列真实 PostgreSQL 集成', { concurrency: false }
     url.hash = `token=${encodeURIComponent(token)}`;
     const fake = mockedFetch();
     assert.equal(await runMailBatch(pool, config, fake.fetcher), 'accepted');
-    const body = assertRequest(fake, initial, '验证餐厅商家邮箱', `请打开链接并主动确认邮箱验证。\n${url.href}\n如非本人请求，请忽略此邮件。`);
-    const link = new URL(body.TextBody.split('\n')[1]!);
+    const expected = renderAccountMail('verify_email', url);
+    const body = assertRequest(fake, initial, 'Verify your email — Table Folk', expected.text);
+    assert.equal(body.HtmlBody, expected.html);
+    assert.equal((await owner.query('SELECT status FROM users WHERE id=$1', [initial.user_id])).rows[0].status, 'pending_verification');
+    const link = new URL(body.TextBody.split('\n').find(line => line.startsWith('https://'))!);
     assert.equal(link.origin, config.appOrigin);
     assert.equal(link.pathname, '/auth/verify');
     assert.equal(link.search, '');
@@ -288,7 +298,9 @@ describe('Postmark 邮件队列真实 PostgreSQL 集成', { concurrency: false }
     url.hash = `token=${encodeURIComponent(token)}`;
     const fake = mockedFetch();
     assert.equal(await runMailBatch(pool, config, fake.fetcher), 'accepted');
-    assertRequest(fake, initial, '重置餐厅商家密码', `请打开链接设置新密码。\n${url.href}\n如非本人请求，请忽略此邮件。`);
+    const expected = renderAccountMail('reset_password', url);
+    const body = assertRequest(fake, initial, 'Reset your password — Table Folk', expected.text);
+    assert.equal(body.HtmlBody, expected.html);
     const accepted = await assertAccepted(initial);
     assert.equal(await runMailBatch(pool, config, fake.fetcher), 'idle');
     assert.equal(fake.calls.length, 1);

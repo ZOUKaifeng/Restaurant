@@ -103,6 +103,26 @@ test('成功请求仅使用固定 HTTPS、令牌头、隐私字段和供应商 U
   assert.ok(!String(init.body).includes(settings.serverToken));
 });
 
+test('HTML与纯文本同时提交，保留禁跟踪设置与固定API', async () => {
+  const html = '<html lang="en"><body><p>Verify your email</p></body></html>';
+  const fake = mockedFetch(async () => jsonResponse(accepted));
+  assert.deepEqual(await sendPostmarkMail(settings, { ...message, html }, fake.fetcher), { messageId: providerId });
+  assert.equal(fake.calls.length, 1);
+  const payload = JSON.parse(String(fake.calls[0]!.init?.body));
+  assert.equal(payload.HtmlBody, html);
+  assert.equal(payload.TextBody, message.text);
+  assert.equal(payload.TrackLinks, 'None');
+  assert.equal(payload.TrackOpens, false);
+});
+
+for (const html of ['', 123, 'x'.repeat(1024 * 1024 + 1), '汉'.repeat(400000)]) {
+  test(`HTML输入拒绝不合法类型或超预算：${typeof html}-${String(html).length}，零外发`, async () => {
+    const fake = mockedFetch(async () => jsonResponse(accepted));
+    await expectCode(sendPostmarkMail(settings, { ...message, html } as PostmarkMessage, fake.fetcher), 'POSTMARK_CONFIG_INVALID');
+    assert.equal(fake.calls.length, 0);
+  });
+}
+
 const invalidSettings: [string, Partial<PostmarkMailSettings>][] = [
   ['空令牌', { serverToken: '' }],
   ['测试令牌', { serverToken: 'POSTMARK_API_TEST' }],

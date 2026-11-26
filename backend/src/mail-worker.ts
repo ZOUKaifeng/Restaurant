@@ -7,6 +7,7 @@ import { loadConfig, type Config } from './config.js';
 import { assertAppDatabase, createPool, transaction } from './db.js';
 import { secret } from './security.js';
 import { sendPostmarkMail, PostmarkMailError } from './postmark-mail.js';
+import { renderAccountMail } from './mail-templates.js';
 import { startupFailureLine, type StartupStage } from './startup-diagnostics.js';
 
 function decrypt(config: Config, outboxId: string, value: string): string {
@@ -54,7 +55,7 @@ export async function runMailBatch(pool: Pool, config: Config, postmarkFetch?: t
     const token = task.sensitive_payload_ciphertext ? decrypt(config, task.id, task.sensitive_payload_ciphertext) : null;
     const reservationTemplates = ['reservation_received','reservation_confirmed','reservation_declined','reservation_cancelled'];
     const reservation = reservationTemplates.includes(task.template_key);
-    let url: URL | null, subject: string, text: string;
+    let url: URL | null, subject: string, text: string, html: string | undefined;
     if (reservation) {
       const payload = (task.payload ?? {}) as Record<string, unknown>;
       const reference = typeof payload.reference === 'string' ? payload.reference : '';
@@ -71,17 +72,17 @@ export async function runMailBatch(pool: Pool, config: Config, postmarkFetch?: t
       text = `${intro[task.template_key]!}\nReference: ${reference}\nDate/time: ${when}\nParty size: ${party}\n${url ? `View status or cancel: ${url.href}` : 'Use the link in your confirmation email to view status.'}\nIf you did not make this request, please ignore this email.`;
     } else {
       if (!token) throw new Error('邮件动作材料缺失');
-      const verifying = task.template_key === 'verify_email';
-      url = new URL(verifying ? '/auth/verify' : '/auth/reset', config.appOrigin);
+      if (!['verify_email', 'reset_password'].includes(task.template_key)) throw new Error('不支持的邮件模板');
+      const purpose = task.template_key as 'verify_email' | 'reset_password';
+      url = new URL(purpose === 'verify_email' ? '/auth/verify' : '/auth/reset', config.appOrigin);
       url.hash = `token=${encodeURIComponent(token)}`;
-      subject = verifying ? '验证餐厅商家邮箱' : '重置餐厅商家密码';
-      text = `${verifying ? '请打开链接并主动确认邮箱验证。' : '请打开链接设置新密码。'}\n${url.href}\n如非本人请求，请忽略此邮件。`;
+      ({ subject, text, html } = renderAccountMail(purpose, url));
     }
     const messageId = `<${task.id}@${new URL(config.appOrigin).hostname}>`;
     let providerMessageId: string;
     if (config.emailMode === 'postmark') {
       submitted = true;
-      const info = await sendPostmarkMail(config.postmark!, { to: task.recipient_email, subject, text, messageId }, postmarkFetch);
+      const info = await sendPostmarkMail(config.postmark!, { to: task.recipient_email, subject, text, ...(html ? { html } : {}), messageId }, postmarkFetch);
       providerMessageId = info.messageId;
     } else {
       const smtp = config.smtp!;
@@ -89,7 +90,7 @@ export async function runMailBatch(pool: Pool, config: Config, postmarkFetch?: t
         requireTLS: !smtp.secure, auth: { user: smtp.user, pass: smtp.pass }, connectionTimeout: 10000, greetingTimeout: 10000,
         socketTimeout: 20000, logger: false, debug: false, disableFileAccess: true, disableUrlAccess: true });
       submitted = true;
-      const info = await transport.sendMail({ from: smtp.from, to: task.recipient_email, messageId, subject, text });
+      const info = await transport.sendMail({ from: smtp.from, to: task.recipient_email, messageId, subject, text, ...(html ? { html } : {}) });
       if (!info.accepted?.length || info.rejected?.length) throw new Error('SMTP 未接受收件人');
       providerMessageId = info.messageId;
     }
