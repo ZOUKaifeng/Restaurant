@@ -9,7 +9,7 @@ import { createApp } from '../src/app.js';
 import { migrate } from '../scripts/migrate.js';
 import { contract, schemaValidator } from '../src/validation.js';
 import { runMailBatch } from '../src/mail-worker.js';
-import { digest, lockAuthenticated, SESSION_COOKIE, FLOW_COOKIE, type Session } from '../src/security.js';
+import { digest, lockAuthenticated, SESSION_COOKIE, FLOW_COOKIE, REGISTRATION_COOKIE, type Session } from '../src/security.js';
 
 let pool: Pool, owner: Pool, app: FastifyInstance, config: Config;
 let sequence = 0;
@@ -94,7 +94,8 @@ async function register(email: string): Promise<Actor> {
   const result = await request('POST', '/auth/register', actor, { email, password, display_name: ' 测试商家 ', locale: 'en', terms_version: 'terms-v1', accepted_terms: true });
   assert.equal(result.statusCode, 202, result.body);
   assert.ok(schemaValidator('Accepted')(result.json()));
-  assert.equal(result.headers['set-cookie'], undefined);
+  const proof = cookies(result, REGISTRATION_COOKIE);
+  assert.ok(!proof.includes(email));
   return actor;
 }
 async function login(actor: Actor): Promise<Actor> {

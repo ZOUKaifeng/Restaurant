@@ -158,9 +158,46 @@ for (const [path, item] of Object.entries(api.paths)) {
     }
   }
 }
+const pathCount = Object.keys(api.paths).length;
+const schemaCount = Object.keys(api.components.schemas).length;
 check(operationCount === 17, '17 scoped operations');
-check(Object.keys(api.paths).length === 14, '14 scoped paths');
-check(Object.keys(api.components.schemas).length === 21, '21 scoped schemas');
+check(pathCount === 14, '14 scoped paths');
+check(schemaCount === 22, '22个限定schema');
+
+const verifyInput = api.components.schemas.VerifyEmailInput;
+check(verifyInput.type === 'object' && verifyInput.additionalProperties === false, 'VerifyEmailInput仅接受精确对象');
+check(JSON.stringify(Object.keys(verifyInput.properties).sort()) === JSON.stringify(['continue_session', 'token']), 'VerifyEmailInput仅包含token及continue_session');
+check(JSON.stringify(verifyInput.required) === JSON.stringify(['token']), 'VerifyEmailInput仅token必填');
+assert.deepEqual(verifyInput.properties.token, api.components.schemas.ActionTokenInput.properties.token);
+check(true, 'VerifyEmailInput复用完全一致的动作令牌属性schema');
+check(verifyInput.properties.continue_session.type === 'boolean' && verifyInput.properties.continue_session.default === false, 'continue_session是缺省false的可选布尔值');
+
+const verifyOperation = api.paths['/auth/verify-email'].post;
+const loginResponse = api.paths['/auth/login'].post.responses['200'];
+check(verifyOperation.requestBody.required && verifyOperation.requestBody.content['application/json'].schema.$ref === '#/components/schemas/VerifyEmailInput', '邮箱验证请求使用必填VerifyEmailInput');
+check(verifyOperation.security.length === 0, '旧token-only验证不增加无条件CSRF要求；true分支要求见操作描述');
+check(verifyOperation.responses['200'].content['application/json'].schema.$ref === '#/components/schemas/LoginResponse', '继续会话成功返回200 LoginResponse');
+assert.deepEqual(verifyOperation.responses['200'].headers, loginResponse.headers);
+check(true, '邮箱验证200沿用登录200的Cookie及安全响应头模式');
+assert.deepEqual(verifyOperation.responses['200'].content['application/json'].example, loginResponse.content['application/json'].example);
+check(true, '邮箱验证200复用已有合成登录响应示例');
+check(verifyOperation.responses['204'] !== undefined && !verifyOperation.responses['204'].content, '旧204兼容且无响应体');
+check(!verifyOperation.responses['206'], '继续会话使用200而非206');
+check(verifyOperation.responses['403'].$ref === '#/components/responses/Error403', '继续会话Origin或CSRF校验失败引用Error403');
+check(verifyOperation.responses['410'].$ref === '#/components/responses/Error410', '令牌过期或撤销仍引用Error410');
+for (const path of ['/auth/register', '/auth/verification-emails']) {
+  check(api.paths[path].post.responses['202'].headers['Set-Cookie'].$ref === '#/components/headers/RegistrationCookie', `${path}的202声明注册证明Cookie元数据`);
+}
+
+const verify = { token: 'example_action_token_not_a_real_secret_123456' };
+expectValid('VerifyEmailInput', verify);
+expectValid('VerifyEmailInput', { ...verify, continue_session: true });
+expectValid('VerifyEmailInput', { ...verify, continue_session: false });
+expectInvalid('VerifyEmailInput', { ...verify, continue_session: 'false' });
+expectInvalid('VerifyEmailInput', { ...verify, continue_session: null });
+expectInvalid('VerifyEmailInput', { ...verify, continue_session: true, extra: true });
+expectInvalid('VerifyEmailInput', { continue_session: true });
+expectInvalid('VerifyEmailInput', { token: 'short' });
 
 const register = { email: 'owner@restaurant.example', password: 'Example-only-password-for-contract-tests', locale: 'en', terms_version: 'terms-v1', accepted_terms: true };
 expectValid('RegisterInput', register);
@@ -214,5 +251,5 @@ for (const document of ['../../README.md', '../../TODO.md', '../../outputs/商�
   }
 }
 
-console.log(`通过：${operationCount}个操作、21个schema，${exampleCount}个请求/响应示例，${checks}条静态契约检查。`);
+console.log(`通过：${operationCount}个操作、${pathCount}条路径、${schemaCount}个schema，${exampleCount}个请求/响应示例，${checks}条静态契约检查。`);
 console.log('范围：仅引用、声明、schema子集和示例验证；未验证真实服务器、数据库事务、认证、邮件或部署。');

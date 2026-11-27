@@ -138,16 +138,19 @@
             "CsrfToken": []
           }
         ],
-        "description": "有效新账号写pending_verification、凭据、验证令牌和邮件outbox，事务成功才202。不建立登录会话，不替换已注册账号密码，不给予商家/管理员权限。合法已存在邮箱同样202；后台细节不反映在响应或显著时间差中。",
+        "description": "有效新账号写pending_verification、凭据、验证令牌和邮件outbox，事务成功才202。不建立登录会话，不替换已注册账号密码，不给予商家/管理员权限。每个202均设置24h有效的签名HttpOnly __Host-restaurant_registration Cookie：有效新注册证明绑定账号、目标邮箱、验证令牌及当前凭据/邮箱版本；合法已存在邮箱同样202并设置不可用于自动登录的dummy证明，两者Cookie外观、响应及显著时间差不可区分。注册浏览器证明不是CSRF上下文，不替代Origin和CSRF校验；凭据或邮箱变更使旧证明失效。",
         "responses": {
           "202": {
-            "description": "统一受理结果，不泄露邮箱是否注册",
+            "description": "统一受理结果及注册浏览器证明Cookie，不泄露邮箱是否注册",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/CacheControl"
               },
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/RegistrationCookie"
               }
             },
             "content": {
@@ -217,16 +220,19 @@
             "CsrfToken": []
           }
         ],
-        "description": "",
+        "description": "统一202，不泄露邮箱是否注册。仅当浏览器已持有有效、非dummy且匹配请求账号、邮箱及当前凭据/邮箱版本的注册证明时，才将__Host-restaurant_registration Cookie重新绑定到新验证令牌。缺失、无效、过期、版本陈旧或不匹配的证明均保持原Cookie不变，不创建自动登录证明；邮箱输入、Origin或CSRF上下文本身不能获得注册证明。凭据或邮箱变更使旧证明失效。",
         "responses": {
           "202": {
-            "description": "统一受理结果",
+            "description": "统一受理结果；仅有效既有注册证明可重新绑定Cookie，否则不设置该Cookie",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/CacheControl"
               },
               "X-Request-Id": {
                 "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/RegistrationCookie"
               }
             },
             "content": {
@@ -282,10 +288,44 @@
           "Auth"
         ],
         "security": [],
-        "description": "显式POST，以高熵purpose=verify_email令牌授权，不依赖ambient session。GET/邮件扫描不验证。原子消费、验证目标邮箱/到期/撤销；同一已成功令牌在有效且未撤销期间重试204，不重复副作用。失效不透露账号存在状态。",
+        "description": "仅显式POST，以高熵purpose=verify_email令牌授权验证目标邮箱；GET/邮件扫描不验证、不建立会话。原子校验目标邮箱、到期及撤销并消费令牌，失效不透露账号存在状态，过期或撤销仍410。continue_session缺省或false保持旧客户端兼容：仅凭token验证，不要求Origin或CSRF，成功及有效未撤销的已消费令牌重试均204，不自动登录。continue_session=true必须校验允许的Origin及绑定authflow或当前session的X-CSRF-Token，失败403；注册浏览器证明只是注册证明，不是CSRF上下文，不能替代上述校验。通过校验后，若已有目标同账号的当前有效会话，返回200 LoginResponse并复用会话及CSRF，不重复建会话、不轮换；若当前有效会话属于其他账号，只完成邮箱验证并返回204，原会话保持不变，不切换账号。无当前有效会话时，只有未消费令牌与同一注册浏览器的有效非dummy __Host-restaurant_registration签名证明匹配账号、目标邮箱、令牌及当前凭据/邮箱版本，才原子验证并建立新会话，返回200 LoginResponse及会话Set-Cookie。跨浏览器、缺失/无效/过期/陈旧证明或其他不满足自动登录条件的有效验证均204；凭据或邮箱变更使旧证明失效。已消费令牌在有效且未撤销期间重试不得建立新登录会话，无同账号当前有效会话时即使continue_session=true也204；旧客户端重试始终204。",
         "responses": {
+          "200": {
+            "description": "显式请求继续会话且满足注册证明条件时建立安全Cookie会话，或复用同账号当前有效会话；复用时不重复建会话、不轮换、不重新设置会话Cookie，JSON不含登录密钥",
+            "headers": {
+              "Cache-Control": {
+                "$ref": "#/components/headers/CacheControl"
+              },
+              "X-Request-Id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "Set-Cookie": {
+                "$ref": "#/components/headers/SessionCookie"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResponse"
+                },
+                "example": {
+                  "user": {
+                    "id": "usr_example_owner_0001",
+                    "email": "owner@restaurant.example",
+                    "display_name": "Restaurant owner",
+                    "locale": "en",
+                    "status": "active",
+                    "email_verified_at": "2026-11-14T00:00:00Z",
+                    "created_at": "2026-11-14T00:00:00Z"
+                  },
+                  "session_expires_at": "2026-11-15T00:00:00Z",
+                  "csrf_token": "example_rotated_csrf_not_a_real_secret_123456"
+                }
+              }
+            }
+          },
           "204": {
-            "description": "验证有效目标，账号可登录；不自动登录",
+            "description": "邮箱验证成功或有效令牌已消费重试；兼容token-only请求或不满足继续会话条件，不新建登录会话、不切换当前账号",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/CacheControl"
@@ -297,6 +337,9 @@
           },
           "400": {
             "$ref": "#/components/responses/Error400"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error403"
           },
           "410": {
             "$ref": "#/components/responses/Error410"
@@ -319,7 +362,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ActionTokenInput"
+                "$ref": "#/components/schemas/VerifyEmailInput"
               },
               "example": {
                 "token": "example_action_token_not_a_real_secret_123456"
@@ -1565,6 +1608,26 @@
         ],
         "additionalProperties": false
       },
+      "VerifyEmailInput": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 256,
+            "writeOnly": true
+          },
+          "continue_session": {
+            "type": "boolean",
+            "default": false,
+            "description": "缺省或false仅验证邮箱并返回204；true显式请求继续会话，必须通过Origin和authflow或session CSRF校验，且满足注册浏览器证明或同账号当前有效会话条件才返回200。"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "additionalProperties": false
+      },
       "LoginInput": {
         "type": "object",
         "properties": {
@@ -2559,6 +2622,12 @@
           "type": "string"
         },
         "description": "未登录时设置短期__Host-restaurant_authflow；Path=/; Secure; HttpOnly; SameSite=Lax。CSRF token绑定此上下文。"
+      },
+      "RegistrationCookie": {
+        "schema": {
+          "type": "string"
+        },
+        "description": "__Host-restaurant_registration=...; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=86400；服务端签名，24h有效，不允许Domain属性，不在JSON返回证明。仅为注册浏览器证明，不是CSRF上下文。register的每个202均设置，有效新注册与重复邮箱dummy证明外观不可区分，dummy不能自动登录；verification-emails的202仅在有效既有注册证明匹配时重新绑定新令牌并设置，否则保持Cookie不变。证明绑定账号、目标邮箱、验证令牌及当前凭据/邮箱版本；凭据或邮箱变更使旧证明失效。"
       },
       "WwwAuthenticate": {
         "schema": {

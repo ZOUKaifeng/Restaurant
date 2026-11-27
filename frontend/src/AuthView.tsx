@@ -4,7 +4,7 @@ import { api } from './api';
 import { legalPath } from './routing';
 import type { RouteState } from './routing';
 import type { RegistrationPolicy, SessionView } from './types';
-import { acceptedMessage, ActionFeedback, ErrorNotice, LocaleSelect, PageLink, useAction } from './ui';
+import { ActionFeedback, ErrorNotice, LocaleSelect, PageLink, useAction } from './ui';
 import type { Navigate } from './ui';
 import './auth.css';
 
@@ -25,7 +25,7 @@ const headings: Record<string, { title: string; text: string }> = {
   register: { title: 'Start with your restaurant', text: 'Create an account, then verify your email to get started.' },
   forgot: { title: 'Reset password', text: 'Request a reset link. Your password and sessions stay unchanged until you confirm a new password.' },
   resend: { title: 'Verify your email', text: 'Request a new verification link using your registration email.' },
-  verify: { title: 'Confirm your email', text: 'Ready when you are. Your email is verified only after you select the button below.' },
+  verify: { title: 'Confirm your email', text: 'Verify your email to continue.' },
   reset: { title: 'Set a new password', text: 'Resetting your password revokes all sessions for this account. You will need to sign in again.' },
 };
 
@@ -72,20 +72,21 @@ export default function AuthView(props: Props) {
         });
         form.reset();
         setCompleted(true);
-        return acceptedMessage;
+        return;
       }
       if (page === 'forgot' || page === 'resend') {
         if (page === 'forgot') await api.requestReset({ email });
         else await api.resendVerification({ email });
         form.reset();
         setCompleted(true);
-        return acceptedMessage;
+        return;
       }
       if (isVerify && token) {
-        await api.verify({ token });
+        const session = await api.verify({ token, continue_session: true });
         setCompleted(true);
         props.onConsumed(false);
-        return 'Email verified. Sign in to continue; verification does not sign you in automatically.';
+        if (session) { props.onLogin(session); return; }
+        return 'Email verified. Sign in to continue.';
       }
       if (isReset && token) {
         await api.reset({ token, new_password: password });
@@ -108,8 +109,10 @@ export default function AuthView(props: Props) {
     <div className="form-column">
       <header className="auth-form-heading">
         <p className="eyebrow">Your Table Folk account</p>
-        <h1 tabIndex={-1}>{heading.title}</h1>
-        <p className="muted intro-copy">{heading.text}</p>
+        <h1 tabIndex={-1}>{completed && (isRegister || isEmailOnly) ? 'Check your email' : heading.title}</h1>
+        <p className="muted intro-copy">{completed && (isRegister || isEmailOnly)
+          ? page === 'forgot' ? 'Open the password reset link to continue.' : 'Open the verification link to continue.'
+          : heading.text}</p>
       </header>
       {isRegister && <>
         {props.policyLoading && <p role="status" className="micro">Loading registration requirements…</p>}
@@ -147,15 +150,13 @@ export default function AuthView(props: Props) {
               <label className="check-field" htmlFor="accept-terms"><input id="accept-terms" name="accepted_terms" type="checkbox" checked={acceptedTerms} onChange={(event) => setAcceptedTerms(event.target.checked)} required /><span>I have read and accept the current draft terms (version {policy?.terms_version ?? ''}).</span></label>
             </div>
           </>}
-          {isVerify && <p className="muted auth-verification-note">Verification does not sign you in automatically. The email link token is never displayed on this page or in the address bar.</p>}
-          <button className="primary-button" type="submit">{action.pending ? 'Working…' : isRegister ? 'Create account' : isReset ? 'Confirm new password' : isVerify ? 'Verify email' : isEmailOnly ? 'Request email link' : 'Sign in'}</button>
+          <button className="primary-button" type="submit">{action.pending ? 'Working…' : isRegister ? 'Create account' : isReset ? 'Confirm new password' : isVerify ? 'Verify and continue' : isEmailOnly ? 'Request email link' : 'Sign in'}</button>
         </fieldset>
       </form>}
       <ActionFeedback action={action} />
-      {completed && isRegister && <p className="auth-completion-note">Follow the verification link if it arrives, then sign in. Need another link? Request a new verification email below.</p>}
       <nav className="auth-links" aria-label="Account actions">
         {page !== 'login' && <PageLink href="/auth/login" navigate={navigate} disabled={busy}>Back to sign in</PageLink>}
-        {completed && isRegister && <PageLink href="/auth/resend" navigate={navigate} disabled={busy}>Request another verification email</PageLink>}
+        {completed && isRegister && <PageLink href="/auth/resend" navigate={navigate} disabled={busy}>Resend email</PageLink>}
         {page === 'login' && <>
           <PageLink href="/auth/register" navigate={navigate} disabled={busy}>Create an account</PageLink>
           <PageLink href="/auth/forgot" navigate={navigate} disabled={busy}>Forgot password?</PageLink>

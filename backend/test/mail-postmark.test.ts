@@ -183,7 +183,10 @@ async function register(email = `owner-${randomUUID()}@example.test`): Promise<A
   const response = await request('POST', '/auth/register', actor, { email, password, display_name: ' 邮件测试商家 ',
     locale: 'en', terms_version: policy.json().terms_version, accepted_terms: true });
   assert.equal(response.statusCode, 202, response.body);
-  assert.equal(response.headers['set-cookie'], undefined);
+  const registeredCookies = response.headers['set-cookie'];
+  const headers = Array.isArray(registeredCookies) ? registeredCookies : [registeredCookies];
+  assert.ok(headers.some(value => typeof value === 'string' && value.startsWith('__Host-restaurant_registration=')));
+  assert.ok(headers.every(value => typeof value === 'string' && !value.startsWith('__Host-restaurant_session=')));
   return actor;
 }
 function pinnedPool(client: PoolClient): Pool {

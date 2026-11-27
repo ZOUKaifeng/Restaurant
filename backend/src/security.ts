@@ -7,6 +7,7 @@ import { ApiError, invalid } from './errors.js';
 
 export const SESSION_COOKIE = '__Host-restaurant_session';
 export const FLOW_COOKIE = '__Host-restaurant_authflow';
+export const REGISTRATION_COOKIE = '__Host-restaurant_registration';
 export const cookieOptions = { path: '/', secure: true, httpOnly: true, sameSite: 'lax' as const };
 export const passwordOptions = { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1, hashLength: 32 };
 // 固定的有效 Argon2id 编码用于不存在的账号，照常执行完整验证。
@@ -32,6 +33,23 @@ function flow(config: Config, value: unknown): { context: string; expires: Date 
   if (!equal(expected, signature) || Number(time) <= Date.now() / 1000) return null;
   return { context: `flow:${nonce}.${time}`, expires: new Date(Number(time) * 1000) };
 }
+export interface RegistrationProof { userId: string; tokenId: string; credential: string; expires: Date }
+// This proof is issued only after creating a password identity, never from an anonymous
+// resend alone. It is separate from the email token and from generic CSRF cookies.
+export function registrationProofCookie(config: Config, proof: RegistrationProof): string {
+  const base = `${proof.userId}.${proof.tokenId}.${proof.credential}.${Math.floor(proof.expires.getTime() / 1000)}.${secret()}`;
+  return `${base}.${digest(config, base, 'registration-proof')}`;
+}
+export function readRegistrationProof(config: Config, raw: unknown): RegistrationProof | null {
+  if (typeof raw !== 'string' || raw.length > 320) return null;
+  const match = /^(usr_[A-Za-z0-9_-]{24})\.(tok_[A-Za-z0-9_-]{24})\.([a-f0-9]{64})\.(\d{10})\.([A-Za-z0-9_-]{43})\.([a-f0-9]{64})$/.exec(raw);
+  if (!match) return null;
+  const [, userId, tokenId, credential, time] = match;
+  const base = raw.slice(0, raw.lastIndexOf('.'));
+  if (!equal(digest(config, base, 'registration-proof'), match[6]!) || Number(time) <= Date.now() / 1000) return null;
+  return { userId: userId!, tokenId: tokenId!, credential: credential!, expires: new Date(Number(time) * 1000) };
+}
+
 export function requireOrigin(request: FastifyRequest, config: Config, allowReferer = false): void {
   if (request.headers.origin !== undefined) {
     if (request.headers.origin === config.appOrigin) return;

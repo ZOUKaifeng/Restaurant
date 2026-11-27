@@ -50,7 +50,7 @@ for (const action of ['verify', 'reset'] as const) {
     expect(await page.locator('body').innerText()).not.toContain(token);
     expect(await page.evaluate(() => JSON.stringify(window.history.state))).not.toContain(token);
     expect(posts).toEqual([]);
-    await expect(page.getByRole('button', { name: action === 'verify' ? 'Verify email' : 'Confirm new password', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: action === 'verify' ? 'Verify and continue' : 'Confirm new password', exact: true })).toBeVisible();
   });
 }
 
@@ -64,7 +64,8 @@ test('真实注册返回中性受理文案，不声称邮件送达或验证完�
   const accepted = page.waitForResponse((response) => response.url().endsWith('/api/v1/auth/register') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Create account', exact: true }).click();
   expect((await accepted).status()).toBe(202);
-  await expect(page.getByText('Request accepted. Delivery depends on the email service; this does not verify your address.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Check your email', exact: true })).toBeVisible();
+  await expect(page.getByText('Open the verification link to continue.', { exact: true })).toBeVisible();
   expect(await page.locator('.tf-auth').innerText()).not.toMatch(/\b(?:sent|delivered|success)\b/i);
 });
 

@@ -13,7 +13,7 @@ const copies = {
     preheader: 'Confirm your email and make room for your restaurant.',
     eyebrow: 'Your email, confirmed.',
     intro: 'Welcome to Table Folk. Confirm your email address to get started with your restaurant.',
-    detail: 'The link opens a confirmation page. Your email is verified only after you select “Verify email” there.',
+    detail: 'Open the link, then select “Verify and continue” to finish.',
     expiry: 'This link expires 24 hours after it was requested.',
     ignore: 'If you did not create a Table Folk account, you can safely ignore this email.',
   },

@@ -145,7 +145,7 @@ export function PageLink({ href, navigate, disabled = false, children, className
   return <a href={href} onClick={follow} className={className} aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : undefined}>{children}</a>;
 }
 
-export const acceptedMessage = 'Request accepted. Delivery depends on the email service; this does not verify your address.';
+export const acceptedMessage = 'Check your email for the next step.';
 
 export function LocaleSelect({ name, defaultValue, locales, id }: {
   name: string; defaultValue?: string; locales: string[]; id: string;

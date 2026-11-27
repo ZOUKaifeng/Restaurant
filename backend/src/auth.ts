@@ -4,12 +4,12 @@ import type { Config } from './config.js';
 import { audit, id, transaction } from './db.js';
 import { ApiError, invalid } from './errors.js';
 import { input, locales } from './validation.js';
-import { checkPassword, cookieOptions, csrf, digest, encryptAction, FLOW_COOKIE, hashPassword, issueCsrf, lockAuthenticated, normalizeEmail, requireSession, requireWrite, secret, SESSION_COOKIE, verifyPassword } from './security.js';
+import { checkPassword, cookieOptions, csrf, digest, encryptAction, FLOW_COOKIE, hashPassword, issueCsrf, lockAuthenticated, normalizeEmail, readRegistrationProof, registrationProofCookie, REGISTRATION_COOKIE, requireSession, requireWrite, secret, SESSION_COOKIE, verifyPassword } from './security.js';
 
 const accepted = { message: '如该请求符合条件，我们将向对应邮箱发送说明。' };
-async function queueAction(db: PoolClient, config: Config, user: { id: string; email: string; email_normalized: string }, purpose: 'verify_email' | 'reset_password'): Promise<boolean> {
+async function queueAction(db: PoolClient, config: Config, user: { id: string; email: string; email_normalized: string }, purpose: 'verify_email' | 'reset_password'): Promise<{ tokenId: string; expires: Date } | null> {
   const recent = await db.query(`SELECT id FROM auth_tokens WHERE user_id=$1 AND purpose=$2 AND created_at>now()-interval '60 seconds' LIMIT 1`, [user.id, purpose]);
-  if (recent.rowCount) return false;
+  if (recent.rowCount) return null;
   await db.query(`UPDATE auth_tokens SET revoked_at=now() WHERE user_id=$1 AND purpose=$2 AND used_at IS NULL AND revoked_at IS NULL`, [user.id, purpose]);
   await db.query(`UPDATE email_outbox SET status='cancelled',sensitive_payload_ciphertext=NULL,updated_at=now()
     WHERE user_id=$1 AND template_key=$2 AND status='queued'`, [user.id, purpose]);
@@ -18,7 +18,10 @@ async function queueAction(db: PoolClient, config: Config, user: { id: string; e
   await db.query(`INSERT INTO auth_tokens(id,token_hash,purpose,user_id,target_email_normalized,expires_at) VALUES($1,$2,$3,$4,$5,$6)`, [tokenId, digest(config, token, purpose), purpose, user.id, user.email_normalized, expires]);
   await db.query(`INSERT INTO email_outbox(id,category,template_key,template_version,recipient_email,recipient_email_normalized,recipient_email_key,user_id,auth_token_id,sensitive_payload_ciphertext,sensitive_payload_expires_at,dedupe_key)
     VALUES($1,'transactional',$2,'v1',$3,$4,$5,$6,$7,$8,$9,$10)`, [outboxId, purpose, user.email, user.email_normalized, digest(config, user.email_normalized, 'email'), user.id, tokenId, encryptAction(config, outboxId, token), expires, `${purpose}:${tokenId}:v1`]);
-  return true;
+  return { tokenId, expires };
+}
+function registrationCredential(config: Config, user: { id: string; email_normalized: string }, hash: string): string {
+  return digest(config, `${user.id}\0${user.email_normalized}\0${hash}`, 'registration-credential');
 }
 async function actionTarget(db: PoolClient, config: Config, token: string, purpose: string) {
   const hash = digest(config, token, purpose);
@@ -26,9 +29,10 @@ async function actionTarget(db: PoolClient, config: Config, token: string, purpo
   if (!initial.rows[0]) throw new ApiError(410);
   // 所有凭据/令牌操作先锁用户再锁令牌，避免登录与改密交错及死锁。
   const userResult = await db.query('SELECT * FROM users WHERE id=$1 FOR NO KEY UPDATE', [initial.rows[0].user_id]);
-  const tokenResult = await db.query(`SELECT *,expires_at>clock_timestamp() AS valid FROM auth_tokens WHERE token_hash=$1 AND purpose=$2 FOR UPDATE`, [hash, purpose]);
+  const tokenResult = await db.query(`SELECT * FROM auth_tokens WHERE token_hash=$1 AND purpose=$2 FOR UPDATE`, [hash, purpose]);
   const user = userResult.rows[0], action = tokenResult.rows[0];
-  if (!user || !action || !action.valid || action.revoked_at || action.target_email_normalized !== user.email_normalized || ['suspended', 'deleted'].includes(user.status)) throw new ApiError(410);
+  const clock = action ? await db.query('SELECT $1::timestamptz > clock_timestamp() AS valid', [action.expires_at]) : null;
+  if (!user || !action || !clock?.rows[0].valid || action.revoked_at || action.target_email_normalized !== user.email_normalized || ['suspended', 'deleted'].includes(user.status)) throw new ApiError(410);
   return { user, action };
 }
 async function cleanupAction(db: PoolClient, tokenId: string): Promise<void> {
@@ -43,42 +47,91 @@ export function registerAuth(app: FastifyInstance, pool: Pool, config: Config): 
     if (body.terms_version !== 'terms-v1') invalid('terms_version', 'TERMS_VERSION_CHANGED');
     checkPassword(body.password as string);
     const hash = await hashPassword(body.password as string);
-    await transaction(pool, async db => {
+    // Both new and existing addresses get indistinguishable proof-shaped cookies.
+    // The dummy proof cannot match any real user/token and preserves neutral registration.
+    const proof = await transaction(pool, async db => {
       const userId = id('usr');
       const result = await db.query(`INSERT INTO users(id,email,email_normalized,display_name,locale,terms_version,terms_accepted_at)
         VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(email_normalized) DO NOTHING RETURNING id,email,email_normalized`, [userId, body.email, normalizeEmail(body.email as string), body.display_name ?? null, body.locale, body.terms_version]);
-      if (!result.rows[0]) return;
+      if (!result.rows[0]) return { userId, tokenId: id('tok'), credential: digest(config, secret(), 'registration-dummy'), expires: new Date(Date.now() + 86400000) };
       await db.query(`INSERT INTO auth_identities(id,user_id,provider,password_hash) VALUES($1,$2,'password',$3)`, [id('ident'), userId, hash]);
-      await queueAction(db, config, result.rows[0], 'verify_email');
+      const queued = await queueAction(db, config, result.rows[0], 'verify_email');
+      if (!queued) throw new Error('新账号验证任务未创建');
       await audit(db, userId, 'register', userId, request.id);
+      return { userId, tokenId: queued.tokenId, credential: registrationCredential(config, result.rows[0], hash), expires: queued.expires };
     });
+    reply.setCookie(REGISTRATION_COOKIE, registrationProofCookie(config, proof), { ...cookieOptions, maxAge: 86400 });
     return reply.code(202).send(accepted);
   });
   const requestMail = (purpose: 'verify_email' | 'reset_password') => async (request: FastifyRequest) => {
     await requireWrite(pool, config, request, false);
     const body = input('EmailInput', request.body);
     await verifyPassword(null, 'neutral-mail-request');
-    await transaction(pool, async db => {
+    const currentProof = readRegistrationProof(config, request.cookies[REGISTRATION_COOKIE]);
+    const proof = await transaction(pool, async db => {
       const result = await db.query('SELECT * FROM users WHERE email_normalized=$1 FOR NO KEY UPDATE', [body.email]);
       const user = result.rows[0];
-      if (!user || !['active', 'pending_verification'].includes(user.status) || (purpose === 'verify_email' && user.email_verified_at)) return;
-      if (await queueAction(db, config, user, purpose)) await audit(db, user.id, purpose === 'verify_email' ? 'request_verification' : 'request_reset', user.id, request.id);
+      if (!user || !['active', 'pending_verification'].includes(user.status) || (purpose === 'verify_email' && user.email_verified_at)) return null;
+      const queued = await queueAction(db, config, user, purpose);
+      if (!queued) return null;
+      await audit(db, user.id, purpose === 'verify_email' ? 'request_verification' : 'request_reset', user.id, request.id);
+      if (purpose !== 'verify_email' || !currentProof || currentProof.userId !== user.id) return null;
+      const identity = await db.query('SELECT password_hash FROM auth_identities WHERE user_id=$1 AND provider=\'password\'', [user.id]);
+      const hash = identity.rows[0]?.password_hash;
+      const proofClock = await db.query('SELECT $1::timestamptz > clock_timestamp() AS valid', [currentProof.expires]);
+      if (!proofClock.rows[0].valid || typeof hash !== 'string' || currentProof.credential !== registrationCredential(config, user, hash)) return null;
+      return { ...currentProof, tokenId: queued.tokenId };
     });
-    return accepted;
+    return { accepted, proof };
   };
-  app.post('/api/v1/auth/verification-emails', async (request, reply) => reply.code(202).send(await requestMail('verify_email')(request)));
-  app.post('/api/v1/auth/password-reset-requests', async (request, reply) => reply.code(202).send(await requestMail('reset_password')(request)));
+  app.post('/api/v1/auth/verification-emails', async (request, reply) => {
+    const result = await requestMail('verify_email')(request);
+    if (result.proof) reply.setCookie(REGISTRATION_COOKIE, registrationProofCookie(config, result.proof),
+      { ...cookieOptions, maxAge: Math.max(1, Math.floor((result.proof.expires.getTime() - Date.now()) / 1000)) });
+    return reply.code(202).send(result.accepted);
+  });
+  app.post('/api/v1/auth/password-reset-requests', async (request, reply) => reply.code(202).send((await requestMail('reset_password')(request)).accepted));
   app.post('/api/v1/auth/verify-email', async (request, reply) => {
-    const body = input('ActionTokenInput', request.body);
-    await transaction(pool, async db => {
+    const body = input('VerifyEmailInput', request.body);
+    const continuing = body.continue_session === true;
+    const previous = continuing ? await requireWrite(pool, config, request, false) : null;
+    const proof = continuing ? readRegistrationProof(config, request.cookies[REGISTRATION_COOKIE]) : null;
+    const result = await transaction(pool, async db => {
       const { user, action } = await actionTarget(db, config, body.token as string, 'verify_email');
-      if (action.used_at) return;
-      await db.query(`UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()),status='active',updated_at=now() WHERE id=$1`, [user.id]);
-      await db.query('UPDATE auth_tokens SET used_at=now() WHERE id=$1', [action.id]);
-      await cleanupAction(db, action.id);
-      await audit(db, user.id, 'verify_email', user.id, request.id);
+      const alreadyUsed = Boolean(action.used_at);
+      if (!alreadyUsed) {
+        const verified = await db.query(`UPDATE users SET email_verified_at=COALESCE(email_verified_at,now()),status='active',updated_at=now() WHERE id=$1 RETURNING email_verified_at`, [user.id]);
+        user.email_verified_at = verified.rows[0].email_verified_at;
+        user.status = 'active';
+        await db.query('UPDATE auth_tokens SET used_at=now() WHERE id=$1', [action.id]);
+        await cleanupAction(db, action.id);
+        await audit(db, user.id, 'verify_email', user.id, request.id);
+      }
+      // Never replace another logged-in account. Existing same-account sessions may be
+      // returned after a lost response; replaying a used email token never creates one.
+      if (previous) {
+        if (previous.user.id !== user.id) return null;
+        const current = await lockAuthenticated(db, config, previous);
+        return { user: current.user, expires: current.expires, sessionHash: current.sessionHash, token: null };
+      }
+      if (!continuing || alreadyUsed || !proof || proof.userId !== user.id || proof.tokenId !== action.id) return null;
+      const identity = await db.query("SELECT password_hash FROM auth_identities WHERE user_id=$1 AND provider='password'", [user.id]);
+      const hash = identity.rows[0]?.password_hash;
+      const clock = await db.query('SELECT $1::timestamptz > clock_timestamp() AS valid', [proof.expires]);
+      if (!clock.rows[0].valid || typeof hash !== 'string' || proof.credential !== registrationCredential(config, user, hash)) return null;
+      const token = secret(), sessionHash = digest(config, token, 'session'), expires = new Date(Date.now() + 86400000);
+      await db.query(`INSERT INTO auth_sessions(id,user_id,session_secret_hash,expires_at,last_seen_at) VALUES($1,$2,$3,$4,now())`, [id('ses'), user.id, sessionHash, expires]);
+      await db.query('UPDATE users SET last_login_at=now(),updated_at=now() WHERE id=$1', [user.id]);
+      await audit(db, user.id, 'login', user.id, request.id);
+      return { user, expires, sessionHash, token };
     });
-    return reply.code(204).send();
+    if (!result) return reply.code(204).send();
+    if (result.token) reply.setCookie(SESSION_COOKIE, result.token, { ...cookieOptions, maxAge: 86400 });
+    reply.clearCookie(FLOW_COOKIE, cookieOptions);
+    reply.clearCookie(REGISTRATION_COOKIE, cookieOptions);
+    return { user: { id: result.user.id, email: result.user.email, display_name: result.user.display_name, locale: result.user.locale,
+      status: result.user.status, email_verified_at: result.user.email_verified_at, created_at: result.user.created_at },
+      session_expires_at: result.expires.toISOString(), csrf_token: csrf(config, `session:${result.sessionHash}`, result.expires) };
   });
   app.post('/api/v1/auth/login', async (request, reply) => {
     const previous = await requireWrite(pool, config, request, false);

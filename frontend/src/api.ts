@@ -1,5 +1,5 @@
 import type {
-  Accepted, ActionTokenInput, ApiErrorBody, CsrfResponse, EmailInput, LoginInput,
+  Accepted, VerifyEmailInput, ApiErrorBody, CsrfResponse, EmailInput, LoginInput,
   LoginResponse, LogoutAllInput, OpeningHoursInput, OpeningHoursView,
   RegisterInput, RegistrationPolicy, ResetPasswordInput, Restaurant,
   RestaurantCreateInput, RestaurantList, RestaurantPatchInput, SessionView, Versioned,
@@ -143,6 +143,21 @@ function hoursResponse(response: { data: OpeningHoursView; headers: Headers }, i
   return versioned(response, id, response.data.restaurant_revision);
 }
 
+function acceptLoginResponse(data: LoginResponse): SessionView {
+  if (!data || typeof data !== 'object' || typeof data.csrf_token !== 'string' ||
+      data.csrf_token.length < 32 || data.csrf_token.length > 256 ||
+      !data.user || data.user.status !== 'active' || typeof data.user.id !== 'string' ||
+      !/^[A-Za-z0-9_-]{16,64}$/.test(data.user.id) || typeof data.user.email !== 'string' ||
+      typeof data.user.email_verified_at !== 'string' || !Number.isFinite(Date.parse(data.user.email_verified_at)) ||
+      typeof data.session_expires_at !== 'string' || !Number.isFinite(Date.parse(data.session_expires_at)) ||
+      Date.parse(data.session_expires_at) <= Date.now()) {
+    clearCsrf();
+    throw new ApiError(502, 'RESPONSE_INVALID');
+  }
+  csrfToken = data.csrf_token;
+  return { user: data.user, session_expires_at: data.session_expires_at };
+}
+
 export const api = {
   policy: async (signal?: AbortSignal) => (await request<RegistrationPolicy>('/auth/registration-policy', { signal })).data,
   me: async (signal?: AbortSignal): Promise<SessionView | null> => {
@@ -154,15 +169,14 @@ export const api = {
   },
   register: async (body: RegisterInput) => (await request<Accepted>('/auth/register', { method: 'POST', body, csrf: true })).data,
   resendVerification: async (body: EmailInput) => (await request<Accepted>('/auth/verification-emails', { method: 'POST', body, csrf: true })).data,
-  verify: async (body: ActionTokenInput) => { await request<void>('/auth/verify-email', { method: 'POST', body }); },
+  verify: async (body: VerifyEmailInput): Promise<SessionView | null> => {
+    const { data } = await request<LoginResponse | undefined>('/auth/verify-email', { method: 'POST', body, csrf: body.continue_session === true, session: body.continue_session === true });
+    if (data === undefined) return null;
+    return acceptLoginResponse(data);
+  },
   login: async (body: LoginInput): Promise<SessionView> => {
     const { data } = await request<LoginResponse>('/auth/login', { method: 'POST', body, csrf: true });
-    if (typeof data.csrf_token !== 'string' || data.csrf_token.length < 32 || data.csrf_token.length > 256) {
-      clearCsrf();
-      throw new ApiError(502, 'RESPONSE_INVALID');
-    }
-    csrfToken = data.csrf_token;
-    return { user: data.user, session_expires_at: data.session_expires_at };
+    return acceptLoginResponse(data);
   },
   requestReset: async (body: EmailInput) => (await request<Accepted>('/auth/password-reset-requests', { method: 'POST', body, csrf: true })).data,
   reset: async (body: ResetPasswordInput) => {

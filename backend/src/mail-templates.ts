@@ -22,7 +22,7 @@ export function renderAccountMail(purpose: AccountMailPurpose, actionUrl: URL): 
     : 'We received a request to reset the password for your Table Folk account.';
   const button = verifying ? 'Verify email' : 'Reset password';
   const detail = verifying
-    ? 'The link opens a confirmation page. Your email is verified only after you select “Verify email” there.'
+    ? 'Open the link, then select “Verify and continue” to finish.'
     : 'The link opens a page where you can choose a new password. Opening it does not change your password.';
   const expiry = verifying ? 'This link expires 24 hours after it was requested.' : 'This link expires 30 minutes after it was requested.';
   const ignore = verifying

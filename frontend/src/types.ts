@@ -37,6 +37,7 @@ export interface RegisterInput {
 }
 export interface EmailInput { email: string }
 export interface ActionTokenInput { token: string }
+export interface VerifyEmailInput extends ActionTokenInput { continue_session?: boolean }
 export interface LoginInput extends EmailInput { password: string }
 export interface LogoutAllInput { current_password: string }
 export interface ResetPasswordInput extends ActionTokenInput { new_password: string }
